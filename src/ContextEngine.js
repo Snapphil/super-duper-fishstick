@@ -16,7 +16,7 @@ function getActiveTheme_() {
 }
 
 function getThemeList() {
-  return ['default', 'dark', 'light', 'neon', 'brutalist', 'minimal', 'pastel', 'corporate', 'playful'];
+  return Object.keys(BUILT_IN_THEMES);
 }
 
 // ============ MAIN PROMPT BUILDERS ============
@@ -71,6 +71,8 @@ You understand natural language, follow-ups, context, slang, ambiguity.
 
 ═══ DESIGN STATE ═══
 Active Theme: ${theme}
+Built-in themes: ${getThemeList().join(', ')}
+${getUiPrefsContext_()}
 
 ═══ PENDING APPROVALS ═══
  ${pendingSummary || 'None.'}
@@ -89,7 +91,7 @@ PM: ${(prefs.schedule && prefs.schedule.evening_enabled) !== false ? ((prefs.sch
 Parse the human's message. Return JSON:
 
 {
-  "intent": "approve|reject|edit|approve_all|compose|reply_to|query|brief_me|schedule_change|preference|context_update|pause|resume|status|show_deadlines|show_people|show_memory|design_change|research|follow_up|conversation",
+  "intent": "approve|reject|edit|approve_all|compose|reply_to|query|brief_me|schedule_change|preference|context_update|pause|resume|status|show_deadlines|show_people|show_memory|design_change|ui_feedback|research|follow_up|conversation",
   "shortcode": null,
   "modifications": null,
   "compose_to": null,
@@ -104,6 +106,10 @@ Parse the human's message. Return JSON:
   "context_text": null,
   "pause_hours": null,
   "design_description": "Desired design/theme if design_change intent, null otherwise",
+  "days": "Number of days if time window specified (e.g. 14 for 'next 14 days'), null otherwise",
+  "ui_feedback_sentiment": "positive|negative|neutral — only for ui_feedback intent, null otherwise",
+  "ui_dos": ["extracted do-rules from user's UI feedback, e.g. 'use high contrast', empty array if none"],
+  "ui_donts": ["extracted dont-rules from user's UI feedback, e.g. 'avoid tiny fonts', empty array if none"],
   "research_question": "Rephrased research question with specifics. Null if not research.",
   "research_depth": "deep|quick",
   "conversational_response": "Under 50 words, null if not conversation.",

@@ -27,7 +27,9 @@ const AGENTS = {
       'research_synthesis',
       'conversational_reply',
       'draft_editing',
-      'visual_design'
+      'visual_design',
+      'theme_generation',
+      'ui_feedback_parse'
     ],
     costTier: 'high'  // Use sparingly
   },
@@ -72,6 +74,7 @@ const VAULT = {
   // Learning & state
   BRIEFING_MAP: 'BRIEFING_MAP',        // Briefing queue
   CLUSTERS: 'FILE_CLUSTERS',           // Email clustering data
+  UI_PREFS: 'FILE_UI_PREFS',           // AESTHETE: user UI dos/donts/feedback log
 };
 
 // ============ RELAY CONSTRAINTS ============

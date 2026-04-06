@@ -72,6 +72,7 @@ function setupVault_() {
   mkfile_('FILE_PEOPLE_GRAPH', 'graph.json', folders.people, '{"nodes":{},"edges":[]}');
   mkfile_('FILE_INTERACTIONS', 'interactions.json', folders.people, '{}');
   mkfile_('FILE_CLUSTERS', 'clusters.json', folders.people, '{}');
+  mkfile_('FILE_UI_PREFS', 'ui_prefs.json', folders.memory, '{"dos":[],"donts":[],"feedback_log":[]}');
 }
 
 /**
@@ -416,7 +417,10 @@ function parseCommandWithOpenAI_(text, systemPrompt) {
       research_question: result.research_question || null,
       conversational_response: result.conversational_response || null,
       design_description: result.design_description || null,
-      days: result.days || null
+      days: result.days || null,
+      ui_feedback_sentiment: result.ui_feedback_sentiment || null,
+      ui_dos: result.ui_dos || [],
+      ui_donts: result.ui_donts || []
     };
   } catch (e) {
     Logger.log('[WARN] parseCommandWithOpenAI_ failed: ' + e.message);
@@ -724,18 +728,21 @@ function handleDesignChange_(parsed, text, thread) {
 
   // Unknown theme — ask ORACLE to generate a real color palette
   try {
+    var uiCtx = getUiPrefsContext_();
     var themePrompt =
-      'Generate a complete HTML email color theme for the style: "' + themeName + '".\n' +
-      'Return ONLY valid JSON with these exact keys:\n' +
+      'Generate a complete HTML email color theme for the style: "' + themeName + '".\n\n' +
+      'USER UI PREFERENCES TO RESPECT:\n' + uiCtx + '\n\n' +
+      'Return ONLY valid JSON with these exact keys (no extra keys, no markdown):\n' +
       '{"name":"' + normalized + '","bg":"#hex","cardBg":"#hex","headerBg":"#hex",' +
       '"text":"#hex","textBright":"#hex","textMuted":"#hex","textDim":"#hex",' +
       '"accent":"#hex","accent2":"#hex","accent3":"#hex","success":"#hex",' +
-      '"border":"#hex","radius":"4px","font":"font stack",' +
+      '"border":"#hex","radius":"Xpx","font":"web-safe font stack",' +
       '"mono":"\\"Courier New\\", Courier, monospace","style":"brief style desc","vibe":"short vibe"}\n' +
-      'Colors must be authentic to the requested style. Return nothing except the JSON object.';
+      'Colors must be authentic hex values that embody the requested style and honour user preferences.';
 
     var generated = callOracleJson_('theme_generation', themePrompt,
-      'You are a UI theme designer. Generate cohesive, authentic color palettes for email UIs. Return only valid JSON.');
+      'You are a UI theme designer specialising in email-safe HTML color palettes. ' +
+      'Produce authentic, cohesive colors that match the requested aesthetic. Return only valid JSON, no markdown.');
 
     if (generated && generated.bg && generated.name) {
       generated.name = normalized;
@@ -780,6 +787,54 @@ function handleRetryLast_(thread) {
   } else {
     replyInThread_(thread, quickCard_('Retry', 'No previous command to retry.'));
   }
+}
+
+/**
+ * Handle UI feedback commands — "that was trash", "I love this layout", etc.
+ * Parses dos/donts from ORACLE and stores them in FILE_UI_PREFS for future ORACLE calls.
+ */
+function handleUiFeedback_(parsed, text, thread) {
+  var dos = parsed.ui_dos || [];
+  var donts = parsed.ui_donts || [];
+  var sentiment = parsed.ui_feedback_sentiment || 'neutral';
+
+  // If ORACLE didn't extract rules, ask it directly
+  if (!dos.length && !donts.length) {
+    try {
+      var uiPrefs = getUiPrefs_();
+      var parsePrompt =
+        'The user gave UI/email design feedback: "' + text + '"\n\n' +
+        'Current UI DOs: ' + (uiPrefs.dos.join(', ') || 'none') + '\n' +
+        "Current UI DON'Ts: " + (uiPrefs.donts.join(', ') || 'none') + '\n\n' +
+        'Extract concrete design rules from this feedback. Return JSON:\n' +
+        '{"sentiment":"positive|negative|neutral","dos":["rule1","rule2"],"donts":["rule1","rule2"]}\n' +
+        'Rules should be actionable (e.g. "use high contrast colors", "avoid cluttered layout").\n' +
+        'Empty arrays are fine if no specific rule can be extracted.';
+
+      var result = callOracleJson_('ui_feedback_parse', parsePrompt,
+        'You are a UI design analyst. Extract actionable design rules from user feedback. Return only valid JSON.');
+
+      dos = result.dos || [];
+      donts = result.donts || [];
+      sentiment = result.sentiment || sentiment;
+    } catch (e) {
+      Logger.log('[WARN] UI feedback parse failed: ' + e.message);
+    }
+  }
+
+  // Persist the extracted rules
+  dos.forEach(function(rule) { if (rule) appendUiNote_('do', rule); });
+  donts.forEach(function(rule) { if (rule) appendUiNote_('dont', rule); });
+  // Always log the raw note regardless of rule extraction
+  appendUiNote_('log', '(' + sentiment + ') ' + text.substring(0, 200));
+
+  var t = getTheme();
+  var parts = [];
+  if (dos.length) parts.push('<strong>Noted (DOs):</strong> ' + dos.map(function(r) { return escapeHtml(r); }).join(', '));
+  if (donts.length) parts.push("<strong>Noted (DON'Ts):</strong> " + donts.map(function(r) { return escapeHtml(r); }).join(', '));
+  if (!parts.length) parts.push('Feedback logged. I\'ll apply it to future email designs.');
+
+  replyInThread_(thread, quickCard_('UI FEEDBACK RECEIVED', parts.join('<br>')));
 }
 
 /**

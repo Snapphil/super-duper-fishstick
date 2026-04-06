@@ -229,6 +229,7 @@ function processCommand_(text, thread, message) {
     'research': () => handleResearch_(parsed.originalText, thread),
     'show_deadlines': () => handleShowDeadlines_(thread, parsed.days || 14),
     'design_change': () => handleDesignChange_(parsed, text, thread),
+    'ui_feedback': () => handleUiFeedback_(parsed, text, thread),
     'conversation': () => handleConversation_(parsed, text, thread),
     'schedule_change': () => handleScheduleChange_(parsed, thread),
     'preference': () => handlePreference_(parsed, thread),

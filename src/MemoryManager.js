@@ -134,6 +134,53 @@ function getDefaultPreferences_() {
 
 function getDeadlines_() { return readJson('FILE_DEADLINES') || []; }
 
+// ============ UI PREFERENCES (AESTHETE MEMORY) ============
+
+/**
+ * Returns the persistent UI preference store.
+ * dos/donts are plain-text rules extracted from user feedback.
+ * feedback_log is a chronological record for audit/context.
+ */
+function getUiPrefs_() {
+  return readJson('FILE_UI_PREFS') || { dos: [], donts: [], feedback_log: [] };
+}
+
+/**
+ * Append a parsed UI note to the store.
+ * @param {'do'|'dont'|'log'} type
+ * @param {string} note  Plain-text rule or observation.
+ */
+function appendUiNote_(type, note) {
+  var prefs = getUiPrefs_();
+  var ts = new Date().toISOString();
+  if (type === 'do') {
+    prefs.dos.push(note);
+    if (prefs.dos.length > 30) prefs.dos = prefs.dos.slice(-30);
+  } else if (type === 'dont') {
+    prefs.donts.push(note);
+    if (prefs.donts.length > 30) prefs.donts = prefs.donts.slice(-30);
+  }
+  prefs.feedback_log.push({ ts: ts, type: type, note: note });
+  if (prefs.feedback_log.length > 100) prefs.feedback_log = prefs.feedback_log.slice(-100);
+  writeJson('FILE_UI_PREFS', prefs);
+}
+
+/**
+ * Build a concise UI-prefs summary string for injection into ORACLE prompts.
+ */
+function getUiPrefsContext_() {
+  var prefs = getUiPrefs_();
+  var lines = [];
+  if (prefs.dos && prefs.dos.length) {
+    lines.push('UI DOs: ' + prefs.dos.slice(-10).join(' | '));
+  }
+  if (prefs.donts && prefs.donts.length) {
+    lines.push("UI DON'Ts: " + prefs.donts.slice(-10).join(' | '));
+  }
+  if (!lines.length) return '(no user UI feedback stored yet)';
+  return lines.join('\n');
+}
+
 function getPeopleGraph_() {
   const g = readJson('FILE_PEOPLE_GRAPH');
   return g || { nodes: {}, edges: [] };
