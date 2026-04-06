@@ -132,13 +132,20 @@ function installChronosTriggers_() {
       .create();
   }
 
+  // Daily proactive research at 06:00 (before morning briefing)
+  ScriptApp.newTrigger('runProactiveTasks_')
+    .timeBased()
+    .atHour(6)
+    .everyDays(1)
+    .create();
+
   ScriptApp.newTrigger('runWikiLint_')
     .timeBased()
     .onWeekDay(ScriptApp.WeekDay.SATURDAY)
     .atHour(4)
     .create();
 
-  Logger.log(`⏱️ CHRONOS installed: cmd=${cmdInterval}m, proc=${procInterval}m, wikiLint=Sat 4am`);
+  Logger.log('CHRONOS installed: cmd=' + cmdInterval + 'm, proc=' + procInterval + 'm, proactive=daily 06:00, wikiLint=Sat 04:00');
 }
 
 /**
@@ -993,6 +1000,11 @@ function handleConversation_(parsed, text, thread) {
   var html = result.text || quickCard_('Hermes', 'Got it.');
   storeHermesResponse_(truncate(text, 150), truncate(html, 1500));
   replyInThread_(thread, html);
+
+  // Log this conversation query to the research log so Hermes remembers it
+  try {
+    appendResearchLog_([todayStr_() + ' | conversation | User asked: ' + truncate(text, 120)]);
+  } catch (e) { /* non-critical */ }
 }
 
 function handleScheduleChange_(parsed, thread) {

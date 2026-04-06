@@ -141,22 +141,49 @@ function runHermesPipelineOnBatch_(emails, options) {
     storeBriefingItems_(results);
   }
 
+  // Mark ALL processed emails with the hermes-processed label so they
+  // never get re-classified on the next trigger run.
+  for (var mi = 0; mi < emails.length; mi++) {
+    try {
+      if (emails[mi].thread) markProcessed_(emails[mi].thread);
+    } catch (me) {
+      Logger.log('[WARN] markProcessed_ failed: ' + me.message);
+    }
+  }
+
   var compilationInput = emails.map(function (em, i) {
     return { email: em, classification: results[i] && results[i].classification ? results[i].classification : {} };
   }).filter(function (row) {
     return row.classification && row.classification.category !== 'muted';
   });
 
-  try {
-    updatePeopleProfiles_(compilationInput);
-  } catch (e) {
-    Logger.log('[WARN] People compilation failed: ' + e.message);
-  }
+  // Rate-limit wiki compilation: run at most once per hour to avoid
+  // burning ORACLE tokens on every 10-minute processNewEmails trigger.
+  var lastCompile = getProp('LAST_WIKI_COMPILE_AT');
+  var minutesSinceCompile = lastCompile
+    ? Math.round((Date.now() - new Date(lastCompile).getTime()) / 60000)
+    : 9999;
 
-  try {
-    extractCommitments_(compilationInput);
-  } catch (e) {
-    Logger.log('[WARN] Commitment extraction failed: ' + e.message);
+  var COMPILE_INTERVAL_MIN = 60; // compile at most every 60 minutes
+  var shouldCompile = !options.skipCompilation && minutesSinceCompile >= COMPILE_INTERVAL_MIN;
+
+  if (shouldCompile && compilationInput.length > 0) {
+    try {
+      updatePeopleProfiles_(compilationInput);
+    } catch (e) {
+      Logger.log('[WARN] People compilation failed: ' + e.message);
+    }
+
+    try {
+      extractCommitments_(compilationInput);
+    } catch (e) {
+      Logger.log('[WARN] Commitment extraction failed: ' + e.message);
+    }
+
+    setProp('LAST_WIKI_COMPILE_AT', new Date().toISOString());
+    Logger.log('[PIPE] Wiki compilation ran (was ' + minutesSinceCompile + 'm since last).');
+  } else if (compilationInput.length > 0) {
+    Logger.log('[PIPE] Skipped wiki compilation — only ' + minutesSinceCompile + 'm since last run.');
   }
 
   return { totalTokens: totalTokens, results: results, compilationInput: compilationInput };

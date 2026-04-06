@@ -69,6 +69,15 @@ function readWikiContext_(maxPeople) {
     }
   } catch (e) { Logger.log('[WARN] wiki people: ' + e.message); }
 
+  // Research log — what Hermes has already investigated (prevents repetition,
+  // gives the agent awareness of its own autonomous work history)
+  try {
+    var researchLog = getRecentResearchLog_(20);
+    if (researchLog && researchLog !== '(No research log yet)') {
+      parts.push('[ RESEARCH LOG — recent autonomous tasks ]\n' + researchLog);
+    }
+  } catch (e) { Logger.log('[WARN] wiki research-log: ' + e.message); }
+
   return parts.length > 0 ? parts.join('\n\n') : '(No wiki content compiled yet — will populate as emails are processed.)';
 }
 
