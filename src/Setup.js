@@ -25,6 +25,9 @@ function setupHermes() {
   // 3. Initialize AESTHETE
   initializeTheme_();
 
+  // 3b. Normalize vault layout (renames people/ → _data/, copies AGENT.md → wiki/)
+  try { normalizeVaultLayout_(); } catch (e) { Logger.log('[SETUP] Migration warn: ' + e.message); }
+
   // 4. Install CHRONOS triggers (idempotent)
   installChronosTriggers_();
 
@@ -949,25 +952,17 @@ function handleDesignChange_(parsed, text, thread) {
 }
 
 function handleConversation_(parsed, text, thread) {
-  // Build full context for an intelligent, wiki-aware reply
-  var wikiCtx = readWikiContext_(6);
-  var memory = getMemoryDigest_();
-  var agentMd = getAgentMd_();
+  // loadAgentContext_('full') is the single entry point for everything Hermes knows
+  // context.md (fast brain) + people profiles + commitments + research log
+  var agentCtx = loadAgentContext_('full');
   var schema = getParsedSchema_();
   var history = formatConversationHistory_();
-  var schemaMd = readSchemaMd_();
 
   var systemPrompt = buildHermesPersonaPrompt_();
 
   var userPrompt = [
-    '═══ YOUR COMPILED KNOWLEDGE (wiki — use this to answer questions about the user) ═══',
-    truncate(wikiCtx, 2500),
-    '',
-    '═══ MEMORY DIGEST ═══',
-    truncate(memory.full, 1500),
-    '',
-    '═══ USER PREFERENCES (schema) ═══',
-    truncate(schemaMd, 600),
+    '═══ YOUR COMPILED KNOWLEDGE (everything Hermes knows) ═══',
+    truncate(agentCtx, 3000),
     '',
     '═══ CONVERSATION HISTORY ═══',
     history,

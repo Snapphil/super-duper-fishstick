@@ -129,47 +129,39 @@ function getThemeList() {
 
 /**
  * Build comprehensive prompt for command processing (intent parsing only).
- * Includes memory, schedule, identity, conversation history, and wiki context.
+ * Uses loadAgentContext_() as primary context — single read, always current.
  */
 function buildCommandPrompt_() {
-  var agentMd = getAgentMd_();
+  // Fast path: context.md is already the compiled brain — one read covers it all
+  var agentCtx = loadAgentContext_('fast');
   var pending = getAllPendingApprovals_();
   var map = getBriefingMap_();
   var prefs = getPreferences_();
-  var lastAction = getProp('LAST_ACTION_CONTEXT') || 'none';
   var lastResponse = getLastHermesResponse_();
-  var memory = getMemoryDigest_();
-  var wikiCtx = readWikiContext_(3);  // Inject top 3 people profiles
   var now = new Date();
   var theme = getActiveTheme_();
 
   // Pending approvals summary
   var pendingSummary = pending.map(function(p) {
     var code = '?';
-    var entries = Object.entries ? Object.entries(map) : Object.keys(map).map(function(k) { return [k, map[k]]; });
-    for (var i = 0; i < entries.length; i++) {
-      if (entries[i][1] === p.id) { code = entries[i][0]; break; }
+    var keys = Object.keys(map);
+    for (var i = 0; i < keys.length; i++) {
+      if (map[keys[i]] === p.id) { code = keys[i]; break; }
     }
-    return '#' + code + ': [' + p.type + '] ' + p.subject + ' — urgency: ' + p.urgency;
+    return '#' + code + ': [' + p.type + '] ' + truncate(p.subject || '', 50) + ' — urgency: ' + p.urgency;
   }).join('\n') || '(None.)';
 
   return [
     'You are Hermes — a personal AI email agent parsing a user command.',
     '',
-    '═══ YOUR HUMAN ═══',
-    truncate(agentMd, 500),
-    '',
-    '═══ COMPILED WIKI KNOWLEDGE ═══',
-    truncate(wikiCtx, 1500),
-    '',
-    '═══ MEMORY DIGEST ═══',
-    truncate(memory.full, 1200),
+    '═══ LIVE CONTEXT (wiki/context.md + agent profile) ═══',
+    agentCtx,
     '',
     '═══ CONVERSATION HISTORY ═══',
     formatConversationHistory_(),
     '',
     '═══ LAST RESPONSE ═══',
-    truncate(lastResponse.full || '(None.)', 400),
+    truncate(lastResponse.full || '(None.)', 300),
     '',
     '═══ PENDING APPROVALS ═══',
     pendingSummary,

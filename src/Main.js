@@ -186,6 +186,15 @@ function runHermesPipelineOnBatch_(emails, options) {
     Logger.log('[PIPE] Skipped wiki compilation — only ' + minutesSinceCompile + 'm since last run.');
   }
 
+  // Always rebuild context.md after a batch so the brain is current.
+  // This is cheap (no LLM call) and ensures every subsequent handler
+  // reads a fresh context with the latest threads, deadlines, and pending items.
+  try {
+    updateContextMd_();
+  } catch (e) {
+    Logger.log('[WARN] updateContextMd_ post-batch failed: ' + e.message);
+  }
+
   return { totalTokens: totalTokens, results: results, compilationInput: compilationInput };
 }
 

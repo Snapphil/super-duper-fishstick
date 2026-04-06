@@ -49,6 +49,19 @@ function runProactiveTasks_() {
   var actions = [];
   var researchEntries = [];
 
+  // 0. Rebuild context.md first so every downstream task reads fresh state
+  try { updateContextMd_(); } catch (e) { Logger.log('[PROACTIVE] context.md pre-update: ' + e.message); }
+
+  // 0b. Detect and fill knowledge gaps before the main tasks run
+  try {
+    var gapResult = detectAndFillKnowledgeGaps_();
+    if (gapResult && gapResult.filled && gapResult.filled.length > 0) {
+      researchEntries.push(todayStr_() + ' | gap_fill | ' + gapResult.filled.join(', '));
+    }
+  } catch (e) {
+    Logger.log('[PROACTIVE] Gap detection failed: ' + e.message);
+  }
+
   // 1. Always run: AGENT.md profile research (most valuable)
   try {
     var profileResult = runProfileResearch_();
