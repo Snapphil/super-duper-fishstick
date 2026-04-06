@@ -414,7 +414,9 @@ function parseCommandWithOpenAI_(text, systemPrompt) {
       editInstructions: result.edit_instructions || null,
       pause_hours: result.pause_hours || 24,
       research_question: result.research_question || null,
-      conversational_response: result.conversational_response || null
+      conversational_response: result.conversational_response || null,
+      design_description: result.design_description || null,
+      days: result.days || null
     };
   } catch (e) {
     Logger.log('[WARN] parseCommandWithOpenAI_ failed: ' + e.message);
@@ -625,12 +627,59 @@ function handleResume_(thread) {
   replyInThread_(thread, quickCard_('Resumed', 'Hermes is running again.'));
 }
 
-function handleShowDeadlines_(thread) {
-  const deadlines = getDeadlines_().filter(d => d.status === 'active').slice(0, 10);
-  const body = deadlines.length
-    ? deadlines.map(d => '• ' + d.description + ' — ' + d.date).join('<br>')
-    : 'No active deadlines.';
-  replyInThread_(thread, quickCard_('Deadlines', body));
+function handleShowDeadlines_(thread, days) {
+  days = days || 14;
+  var now = new Date();
+  var cutoff = new Date(now.getTime() + days * 24 * 3600 * 1000);
+
+  var all = getDeadlines_().filter(function(d) {
+    if (d.status !== 'active') return false;
+    if (!d.date) return false;
+    var dl = new Date(d.date);
+    return dl >= now && dl <= cutoff;
+  });
+
+  all.sort(function(a, b) { return new Date(a.date) - new Date(b.date); });
+
+  var t = getTheme();
+
+  if (all.length === 0) {
+    return replyInThread_(thread, quickCard_(
+      'INTEL: NO DEADLINES — NEXT ' + days + ' DAYS',
+      '<span style="color:' + t.success + ';font-family:' + (t.mono || t.font) + ';">ALL CLEAR. No active deadlines in the next ' + days + ' days.</span>'
+    ));
+  }
+
+  var rows = all.map(function(d) {
+    var dl = new Date(d.date);
+    var diffMs = dl - now;
+    var diffDays = Math.ceil(diffMs / (24 * 3600 * 1000));
+    var urgencyColor = diffDays <= 2 ? t.accent : diffDays <= 7 ? t.accent3 : t.accent2;
+    var eta = diffDays === 0 ? 'TODAY' : diffDays === 1 ? 'T-1D' : 'T-' + diffDays + 'D';
+    var cat = (d.category || 'UNKNOWN').toUpperCase();
+    return '<tr>' +
+      '<td style="padding:9px 14px;border-bottom:1px solid ' + t.border + ';font-family:' + (t.mono || t.font) + ';font-size:12px;color:' + urgencyColor + ';font-weight:700;white-space:nowrap;">' + eta + '</td>' +
+      '<td style="padding:9px 14px;border-bottom:1px solid ' + t.border + ';font-family:' + t.font + ';font-size:13px;color:' + t.textBright + ';">' + escapeHtml(d.description) + '</td>' +
+      '<td style="padding:9px 14px;border-bottom:1px solid ' + t.border + ';font-family:' + (t.mono || t.font) + ';font-size:11px;color:' + t.textMuted + ';white-space:nowrap;">' + cat + '</td>' +
+      '<td style="padding:9px 14px;border-bottom:1px solid ' + t.border + ';font-family:' + (t.mono || t.font) + ';font-size:11px;color:' + t.textMuted + ';text-align:right;white-space:nowrap;">' + escapeHtml(d.date) + '</td>' +
+    '</tr>';
+  }).join('');
+
+  var tableHtml =
+    '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">' +
+      '<tr>' +
+        '<th style="padding:7px 14px;background:' + t.headerBg + ';font-family:' + (t.mono || t.font) + ';font-size:10px;color:' + t.textMuted + ';text-align:left;letter-spacing:0.12em;text-transform:uppercase;">ETA</th>' +
+        '<th style="padding:7px 14px;background:' + t.headerBg + ';font-family:' + (t.mono || t.font) + ';font-size:10px;color:' + t.textMuted + ';text-align:left;letter-spacing:0.12em;text-transform:uppercase;">OBJECTIVE</th>' +
+        '<th style="padding:7px 14px;background:' + t.headerBg + ';font-family:' + (t.mono || t.font) + ';font-size:10px;color:' + t.textMuted + ';text-align:left;letter-spacing:0.12em;text-transform:uppercase;">CLASS</th>' +
+        '<th style="padding:7px 14px;background:' + t.headerBg + ';font-family:' + (t.mono || t.font) + ';font-size:10px;color:' + t.textMuted + ';text-align:right;letter-spacing:0.12em;text-transform:uppercase;">DATE</th>' +
+      '</tr>' +
+      rows +
+    '</table>';
+
+  replyInThread_(thread, quickCard_(
+    '▣ INTEL: DEADLINES — NEXT ' + days + ' DAYS [' + all.length + ' ACTIVE]',
+    tableHtml
+  ));
 }
 
 function handleCompose_(parsed, thread) {
@@ -658,8 +707,49 @@ function handleResearch_(question, thread) {
 }
 
 function handleDesignChange_(parsed, text, thread) {
-  if (parsed.design_description) setTheme(parsed.design_description);
-  replyInThread_(thread, quickCard_('Theme Updated', 'Design updated to: ' + (parsed.design_description || 'default')));
+  var themeName = (parsed.design_description || '').trim();
+  if (!themeName) {
+    if (thread) replyInThread_(thread, quickCard_('Design', 'No design specified.'));
+    return;
+  }
+
+  var normalized = themeName.toLowerCase();
+
+  // Built-in theme — apply directly
+  if (BUILT_IN_THEMES[normalized]) {
+    setTheme(normalized);
+    if (thread) replyInThread_(thread, quickCard_('THEME SET', 'Active theme: <strong>' + normalized + '</strong>'));
+    return;
+  }
+
+  // Unknown theme — ask ORACLE to generate a real color palette
+  try {
+    var themePrompt =
+      'Generate a complete HTML email color theme for the style: "' + themeName + '".\n' +
+      'Return ONLY valid JSON with these exact keys:\n' +
+      '{"name":"' + normalized + '","bg":"#hex","cardBg":"#hex","headerBg":"#hex",' +
+      '"text":"#hex","textBright":"#hex","textMuted":"#hex","textDim":"#hex",' +
+      '"accent":"#hex","accent2":"#hex","accent3":"#hex","success":"#hex",' +
+      '"border":"#hex","radius":"4px","font":"font stack",' +
+      '"mono":"\\"Courier New\\", Courier, monospace","style":"brief style desc","vibe":"short vibe"}\n' +
+      'Colors must be authentic to the requested style. Return nothing except the JSON object.';
+
+    var generated = callOracleJson_('theme_generation', themePrompt,
+      'You are a UI theme designer. Generate cohesive, authentic color palettes for email UIs. Return only valid JSON.');
+
+    if (generated && generated.bg && generated.name) {
+      generated.name = normalized;
+      setTheme(generated);
+      if (thread) replyInThread_(thread, quickCard_('CUSTOM THEME APPLIED', 'Generated and applied: <strong>' + themeName + '</strong>'));
+      return;
+    }
+  } catch (e) {
+    Logger.log('[WARN] Theme generation via ORACLE failed: ' + e.message);
+  }
+
+  // Fallback: store the name; getTheme() will use default palette
+  setTheme(normalized);
+  if (thread) replyInThread_(thread, quickCard_('THEME SET', 'Applied: ' + themeName + ' (custom palette generation failed — using base colors)'));
 }
 
 function handleConversation_(parsed, text, thread) {

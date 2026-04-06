@@ -204,7 +204,7 @@ function processCommand_(text, thread, message) {
       case 'status': return handleStatus_(thread);
       case 'pause': return handlePause_(quick.hours || 24, thread);
       case 'resume': return handleResume_(thread);
-      case 'show_deadlines': return handleShowDeadlines_(thread);
+      case 'show_deadlines': return handleShowDeadlines_(thread, quick.days || 14);
     }
   }
 
@@ -214,6 +214,11 @@ function processCommand_(text, thread, message) {
   Logger.log(`🤖 [${parsed.agentUsed}] Intent: ${parsed.intent} (${parsed.confidence})`);
   setProp('LAST_COMMAND', text);
 
+  // If ORACLE detected a design change alongside another intent, apply theme first
+  if (parsed.design_description && parsed.intent !== 'design_change') {
+    handleDesignChange_(parsed, text, null);  // null thread = no reply for the theme sub-step
+  }
+
   // Route to handler
   const handlers = {
     'approve': () => handleApprove_(parsed.shortcode, parsed.modifications, thread),
@@ -222,6 +227,7 @@ function processCommand_(text, thread, message) {
     'compose': () => handleCompose_(parsed, thread),
     'query': () => handleQuery_(parsed, thread),
     'research': () => handleResearch_(parsed.originalText, thread),
+    'show_deadlines': () => handleShowDeadlines_(thread, parsed.days || 14),
     'design_change': () => handleDesignChange_(parsed, text, thread),
     'conversation': () => handleConversation_(parsed, text, thread),
     'schedule_change': () => handleScheduleChange_(parsed, thread),

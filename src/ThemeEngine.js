@@ -76,6 +76,18 @@ const BUILT_IN_THEMES = {
     vibe: '80s Miami sunset'
   },
 
+  military: {
+    name: 'military',
+    bg: '#1a1a0e', cardBg: '#252510', headerBg: '#0f0f08',
+    text: '#a8a870', textBright: '#d4d49a', textMuted: '#5a5a30', textDim: '#3a3a20',
+    accent: '#8aaa40', accent2: '#c8a020', accent3: '#e05020', success: '#60a030',
+    border: '#3a3a20', radius: '2px',
+    font: '"Courier New", Courier, monospace',
+    mono: '"Courier New", Courier, monospace',
+    style: 'military tactical olive drab khaki combat operations',
+    vibe: 'field operations command post'
+  },
+
   default: {
     name: 'default',
     bg: '#f5f5f5', cardBg: '#ffffff', headerBg: '#e8e8e8',
@@ -83,6 +95,7 @@ const BUILT_IN_THEMES = {
     accent: '#0066cc', accent2: '#00aa44', accent3: '#cc4400', success: '#228822',
     border: '#dddddd', radius: '8px',
     font: 'Arial, Helvetica, sans-serif',
+    mono: '"Courier New", Courier, monospace',
     style: 'clean minimal professional default',
     vibe: 'standard corporate'
   }
@@ -92,30 +105,43 @@ const BUILT_IN_THEMES = {
 
 function getTheme() {
   const prefs = getPreferences_();
-  const themeName = prefs.theme && prefs.theme.name 
-    ? prefs.theme.name 
-    : getProp('ACTIVE_THEME') 
-    || 'midnight';
-  
+
+  // prefs.theme can be a full object if set by handleDesignChange_
+  if (prefs.theme && typeof prefs.theme === 'object' && prefs.theme.bg) {
+    return prefs.theme;
+  }
+
+  const stored = (prefs.theme && prefs.theme.name)
+    ? prefs.theme.name
+    : getProp('ACTIVE_THEME') || 'midnight';
+
+  // ACTIVE_THEME may be a JSON-serialized theme object (set via setTheme(object))
+  if (typeof stored === 'string' && stored.charAt(0) === '{') {
+    try {
+      const obj = JSON.parse(stored);
+      if (obj && obj.name && obj.bg) return obj;
+    } catch (e) { /* fall through */ }
+  }
+
+  const themeName = typeof stored === 'string' ? stored.toLowerCase() : 'midnight';
+
   if (BUILT_IN_THEMES[themeName]) {
     return BUILT_IN_THEMES[themeName];
   }
-  
-  // Custom theme support
-  if (typeof themeName === 'string' && !BUILT_IN_THEMES[themeName]) {
-    return { ...BUILT_IN_THEMES.default, name: themeName };
-  }
-  
-  return BUILT_IN_THEMES.midnight;
+
+  // Unknown theme name — return default palette but preserve the name
+  return Object.assign({}, BUILT_IN_THEMES.default, { name: themeName });
 }
 
 function setTheme(themeOrName) {
   if (!themeOrName) return;
-  
+
   if (typeof themeOrName === 'object') {
+    // Store full theme object as JSON so getTheme() can restore it
     setProp('ACTIVE_THEME', JSON.stringify(themeOrName));
   } else {
-    setProp('ACTIVE_THEME', themeOrName);
+    // Normalise to lowercase so BUILT_IN_THEMES lookup is case-insensitive
+    setProp('ACTIVE_THEME', String(themeOrName).toLowerCase().trim());
   }
 }
 
