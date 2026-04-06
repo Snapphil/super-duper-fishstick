@@ -403,20 +403,27 @@ function getBriefingMap_() {
  */
 function parseCommandWithOpenAI_(text, systemPrompt) {
   try {
-    const result = callOracleJson_('command_parsing', text, systemPrompt);
+    var result = callOracleJson_('command_parsing', text, systemPrompt);
     return {
       intent: result.intent || 'conversation',
       shortcode: result.shortcode || null,
       modifications: result.modifications || null,
+      compose_to: result.compose_to || null,
+      compose_subject: result.compose_subject || null,
+      compose_instructions: result.compose_instructions || null,
       originalText: text,
       agentUsed: result._meta ? 'oracle' : 'scribe',
       confidence: result.confidence || 0.5,
-      editInstructions: result.edit_instructions || null,
+      editInstructions: result.edit_instructions || result.modifications || null,
       pause_hours: result.pause_hours || 24,
       research_question: result.research_question || null,
-      conversational_response: result.conversational_response || null,
       design_description: result.design_description || null,
-      days: result.days || null
+      days: result.days || null,
+      // Schedule/preference fields
+      schedule_field: result.schedule_field || result.schedule_target || null,
+      schedule_value: result.schedule_value !== undefined ? result.schedule_value : null,
+      preference_key: result.preference_key || result.preference_type || null,
+      preference_value: result.preference_value !== undefined ? result.preference_value : null
     };
   } catch (e) {
     Logger.log('[WARN] parseCommandWithOpenAI_ failed: ' + e.message);
@@ -449,40 +456,88 @@ function matchesAutoPattern_(email, patterns) {
  */
 function queueDraftForApproval_(email, classification, agentMd, prefs, schemaCommunicationStyle) {
   try {
-    var instructions = '';
-    if (schemaCommunicationStyle && String(schemaCommunicationStyle).trim()) {
-      instructions += '═══ SCHEMA: COMMUNICATION STYLE (follow strictly) ═══\n' + String(schemaCommunicationStyle).trim() + '\n\n';
-    }
-    if (agentMd) instructions += String(agentMd);
+    // Look up sender context from wiki/graph
+    var senderEmail = extractEmailAddress(email.from || '');
+    var senderPerson = senderEmail ? lookupPerson(senderEmail) : null;
+    var senderContext = senderPerson
+      ? 'Known contact: ' + senderPerson.name + ' (' + (senderPerson.type || 'unknown') + '), ' +
+        'importance: ' + (senderPerson.importance || 5) + ', ' +
+        'interactions: ' + (senderPerson.total_interactions || 0)
+      : 'New/unknown contact';
 
-    const draftPrompt = buildForgePrompt_(
-      'draft_reply',
+    var commStyle = schemaCommunicationStyle ? String(schemaCommunicationStyle).trim() : '';
+
+    // Build a quality-focused system prompt for email writing
+    var writingSystemPrompt = [
+      'You are writing an email reply on behalf of the user.',
+      '',
+      'COMMUNICATION RULES (non-negotiable):',
+      '1. Write like a real person, not a corporate chatbot.',
+      '2. Never open with "I hope this email finds you well", "Thank you for reaching out", or similar clichés.',
+      '3. Never use: "Certainly!", "Absolutely!", "Of course!", "Happy to help!"',
+      '4. Match the sender\'s length — if they wrote 2 sentences, write 2-3 sentences back.',
+      '5. Be direct about next steps. Say what you will do, not what you "would be happy to do".',
+      '6. Use contractions naturally (I\'ll, we\'ll, I\'ve). Formal ≠ stiff.',
+      '7. Do not thank them for emailing you unless it is genuinely warranted.',
+      '',
+      commStyle ? ('STYLE PREFERENCES:\n' + commStyle) : 'Tone: professional but warm. Direct. Specific.',
+      '',
+      'OUTPUT: Write the plain email body text (not HTML). Hermes will format it.',
+      'No subject line, no "Dear X", no signature — just the body paragraphs.'
+    ].join('\n');
+
+    var writingUserPrompt = [
+      'Write a reply to this email.',
+      '',
+      'FROM: ' + email.from,
+      'SUBJECT: ' + (email.subject || '(no subject)'),
+      'SENDER CONTEXT: ' + senderContext,
+      'CLASSIFICATION: ' + (classification.category || '?') + ', urgency: ' + (classification.urgency_score || 5),
+      'SUMMARY: ' + (classification.summary || ''),
+      '',
+      'EMAIL BODY:',
+      truncate(email.body || '', 1500),
+      '',
+      'Write the reply body now. Direct, natural, appropriately concise.'
+    ].join('\n');
+
+    // Get the written body text from ORACLE
+    var draftResult = callAgent_('conversational_reply', writingUserPrompt, writingSystemPrompt, {
+      temperature: 0.4,
+      maxTokens: 800
+    });
+    var draftText = draftResult.text || '';
+
+    // Now render the text into themed HTML using FORGE
+    var forgePrompt = buildForgePrompt_(
+      'email_reply',
       {
-        email: { from: email.from, subject: email.subject, body: truncate(email.body, 1500) },
-        classification: classification
+        body_text: draftText,
+        to: email.from,
+        subject: 'Re: ' + (email.subject || '')
       },
-      instructions
+      'Render this plain email body into clean, themed HTML. Keep the text exactly as written — only add structure/formatting. No extra sections.'
     );
-    const draftResult = callAgent_('conversational_reply', draftPrompt.userPrompt, draftPrompt.systemPrompt);
-    const draftHtml = draftResult.text || '';
+    var forgeResult = callAgent_('email_generation', forgePrompt.userPrompt, forgePrompt.systemPrompt);
+    var draftHtml = forgeResult.text || draftText;
 
-    const approval = {
+    var approval = {
       id: 'drft_' + generatedId_(),
       type: 'draft_reply',
       status: 'pending',
-      to: extractEmailAddress(email.from),
+      to: senderEmail,
       subject: 'Re: ' + (email.subject || ''),
       thread_id: email.threadId,
       urgency: classification.urgency_score || 5,
       draft_html: draftHtml,
+      draft_text: draftText,
       created_at: new Date().toISOString()
     };
 
     addPendingApproval(approval);
 
-    // Register shortcode
-    const map = getBriefingMap_();
-    const code = String(Object.keys(map).length + 1);
+    var map = getBriefingMap_();
+    var code = String(Object.keys(map).length + 1);
     map[code] = approval.id;
     setProp('BRIEFING_MAP', JSON.stringify(map));
 
@@ -537,10 +592,23 @@ function generateAndSendBriefing_(label) {
     commitmentsSummary: truncate(commitmentsMd, 800)
   };
 
-  const prompt = buildForgePrompt_(
+  var wikiCtx = readWikiContext_(4);
+
+  var prompt = buildForgePrompt_(
     'daily_briefing',
     briefingData,
-    'Create a crisp briefing. Highlight: pending approvals, overdue items, commitment deadlines. Keep under 400 words.'
+    [
+      'Create a crisp, intelligent briefing. Rules:',
+      '- Lead with what needs action TODAY (overdue, urgent, pending approvals).',
+      '- Summarize emails in plain language — no bullet-point dumps.',
+      '- Include a "Waiting on" section if any commitments are pending from others.',
+      '- If nothing urgent: say so briefly, then surface the most interesting item.',
+      '- No corporate filler. No "I hope you are doing well." Just substance.',
+      '- Under 500 words of content.',
+      '',
+      'WIKI CONTEXT (use for smart summaries):',
+      truncate(wikiCtx, 800)
+    ].join('\n')
   );
 
   const result = callAgent_('email_generation', prompt.userPrompt, prompt.systemPrompt);
@@ -593,7 +661,53 @@ function handleReject_(shortcode, thread) {
 }
 
 function handleEdit_(shortcode, instructions, thread) {
-  replyInThread_(thread, quickCard_('Edit', 'Edit not yet implemented for #' + shortcode + '. Reject and re-compose.'));
+  var approval = findApprovalByShortcode(shortcode);
+  if (!approval) {
+    return replyInThread_(thread, quickCard_('Not Found', 'No draft #' + shortcode + ' in queue.'));
+  }
+
+  var schema = getParsedSchema_();
+  var agentMd = getAgentMd_();
+
+  var editPrompt = buildForgePrompt_(
+    'edit_draft',
+    {
+      original_draft: truncate(approval.draft_html || '', 2000),
+      to: approval.to,
+      subject: approval.subject,
+      edit_instructions: instructions || 'Improve this draft'
+    },
+    [
+      '═══ SCHEMA: COMMUNICATION STYLE ═══',
+      schema.communicationStyle || 'Professional but warm.',
+      '',
+      '═══ AGENT IDENTITY ═══',
+      truncate(agentMd, 400),
+      '',
+      'Edit the original draft per the edit instructions.',
+      'Preserve the intent, improve the execution.',
+      'Output the revised HTML body only.'
+    ].join('\n')
+  );
+
+  try {
+    var editResult = callAgent_('conversational_reply', editPrompt.userPrompt, editPrompt.systemPrompt);
+    var newHtml = editResult.text || approval.draft_html;
+
+    // Update the draft in place
+    var pending = getPendingApprovals_();
+    var idx = pending.findIndex(function(p) { return p.id === approval.id; });
+    if (idx !== -1) {
+      pending[idx].draft_html = newHtml;
+      pending[idx].edited_at = new Date().toISOString();
+      writeJson('FILE_PENDING_APPROVALS', pending);
+    }
+
+    replyInThread_(thread, quickCard_('Draft #' + shortcode + ' Updated',
+      'Revised. Reply <strong>approve ' + shortcode + '</strong> to send.'));
+  } catch (e) {
+    replyInThread_(thread, quickCard_('Edit Error', escapeHtml(e.message)));
+  }
 }
 
 function handleBriefMe_(thread) {
@@ -683,7 +797,82 @@ function handleShowDeadlines_(thread, days) {
 }
 
 function handleCompose_(parsed, thread) {
-  replyInThread_(thread, quickCard_('Compose', 'Compose not yet fully implemented. Use: "draft email to X about Y".'));
+  var to = parsed.compose_to || null;
+  var subject = parsed.compose_subject || null;
+  var instructions = parsed.compose_instructions || parsed.originalText || '';
+  var agentMd = getAgentMd_();
+  var schema = getParsedSchema_();
+
+  if (!to && !instructions) {
+    replyInThread_(thread, quickCard_('Compose', 'Tell me who to email and what to say. Example: "compose email to john@example.com about the project deadline"'));
+    return;
+  }
+
+  // Look up person in graph if we have a name
+  var recipientEmail = to;
+  if (to && !to.includes('@')) {
+    var person = lookupPersonByName(to);
+    if (person) recipientEmail = person.email;
+  }
+
+  // Get person context from wiki if available
+  var personContext = '';
+  if (recipientEmail) {
+    var person2 = lookupPerson(recipientEmail);
+    if (person2 && person2.name) {
+      personContext = 'Recipient: ' + person2.name + ' (' + person2.type + '), importance: ' + person2.importance;
+    }
+  }
+
+  var draftPrompt = buildForgePrompt_(
+    'compose_email',
+    {
+      to: recipientEmail || to || '(recipient not specified)',
+      subject: subject,
+      instructions: instructions,
+      recipientContext: personContext || '(new contact)'
+    },
+    [
+      '═══ SCHEMA: COMMUNICATION STYLE (follow exactly) ═══',
+      schema.communicationStyle || 'Professional but warm. Direct.',
+      '',
+      '═══ AGENT IDENTITY ═══',
+      truncate(agentMd, 500),
+      '',
+      'Write a complete email body (not just the HTML wrapper — the actual email content).',
+      'Be natural, not corporate. Subject line if not provided: infer from content.',
+      'Output HTML for the email body only.'
+    ].join('\n')
+  );
+
+  try {
+    var draftResult = callAgent_('conversational_reply', draftPrompt.userPrompt, draftPrompt.systemPrompt);
+    var draftHtml = draftResult.text || '';
+
+    var approval = {
+      id: 'drft_' + generatedId_(),
+      type: 'compose',
+      status: 'pending',
+      to: recipientEmail || to || '',
+      subject: subject || '(subject from instructions)',
+      thread_id: null,
+      urgency: 5,
+      draft_html: draftHtml,
+      created_at: new Date().toISOString()
+    };
+
+    addPendingApproval(approval);
+    var map = getBriefingMap_();
+    var code = String(Object.keys(map).length + 1);
+    map[code] = approval.id;
+    setProp('BRIEFING_MAP', JSON.stringify(map));
+
+    replyInThread_(thread, quickCard_('Draft Ready — #' + code,
+      'Composed email to <strong>' + escapeHtml(recipientEmail || to || 'recipient') + '</strong>.<br>' +
+      'Reply <strong>approve ' + code + '</strong> to send, <strong>edit ' + code + ' [instructions]</strong> to revise.'));
+  } catch (e) {
+    replyInThread_(thread, quickCard_('Compose Error', escapeHtml(e.message)));
+  }
 }
 
 function handleQuery_(parsed, thread) {
@@ -753,17 +942,149 @@ function handleDesignChange_(parsed, text, thread) {
 }
 
 function handleConversation_(parsed, text, thread) {
-  const reply = parsed.conversational_response || 'Got it.';
-  storeHermesResponse_(reply, reply);
-  replyInThread_(thread, quickCard_('Hermes', escapeHtml(reply)));
+  // Build full context for an intelligent, wiki-aware reply
+  var wikiCtx = readWikiContext_(6);
+  var memory = getMemoryDigest_();
+  var agentMd = getAgentMd_();
+  var schema = getParsedSchema_();
+  var history = formatConversationHistory_();
+  var schemaMd = readSchemaMd_();
+
+  var systemPrompt = buildHermesPersonaPrompt_();
+
+  var userPrompt = [
+    '═══ YOUR COMPILED KNOWLEDGE (wiki — use this to answer questions about the user) ═══',
+    truncate(wikiCtx, 2500),
+    '',
+    '═══ MEMORY DIGEST ═══',
+    truncate(memory.full, 1500),
+    '',
+    '═══ USER PREFERENCES (schema) ═══',
+    truncate(schemaMd, 600),
+    '',
+    '═══ CONVERSATION HISTORY ═══',
+    history,
+    '',
+    '═══ USER MESSAGE ═══',
+    text,
+    '',
+    '═══ INSTRUCTIONS ═══',
+    'Generate a complete HTML email reply. Rules:',
+    '- If they asked what you know about them: enumerate from AGENT.md and wiki above. Be specific.',
+    '- If they greeted you: acknowledge + surface something relevant from memory (a deadline, a pending item, etc.).',
+    '- If they asked a factual question: answer directly from wiki/memory. No vague promises.',
+    '- Never say "I would be happy to", "Certainly!", "Of course!", or lead with pleasantries.',
+    '- Never ask permission for actions you can take. Never ask questions unless truly necessary.',
+    '- Keep it concise. Match the energy of their message.',
+    '- Communication style to follow: ' + (schema.communicationStyle ? truncate(schema.communicationStyle, 200) : 'professional but warm, direct'),
+    '- Output ONLY the inner HTML body — tables and divs using theme colors. No <html>/<body> tags.'
+  ].join('\n');
+
+  var forgePrompt = buildForgePrompt_('conversation', { message: text }, userPrompt);
+
+  var result;
+  try {
+    result = callAgent_('conversational_reply', forgePrompt.userPrompt, forgePrompt.systemPrompt);
+  } catch (e) {
+    Logger.log('[WARN] handleConversation_ ORACLE failed: ' + e.message);
+    result = { text: quickCard_('Hermes', 'Got it — ' + escapeHtml(truncate(text, 80))) };
+  }
+
+  var html = result.text || quickCard_('Hermes', 'Got it.');
+  storeHermesResponse_(truncate(text, 150), truncate(html, 1500));
+  replyInThread_(thread, html);
 }
 
 function handleScheduleChange_(parsed, thread) {
-  replyInThread_(thread, quickCard_('Schedule', 'Schedule changes require editing preferences.json in Drive.'));
+  var prefs = getPreferences_();
+  var sched = prefs.schedule || {};
+
+  // Ask ORACLE to parse the schedule intent and return field/value
+  var parseResult;
+  try {
+    parseResult = callOracleJson_('command_parsing',
+      'Parse this schedule change request and return JSON.\n' +
+      'Request: "' + (parsed.originalText || '') + '"\n' +
+      'Current schedule: ' + JSON.stringify(sched) + '\n\n' +
+      'Return JSON: {"field": "<one of: morning_hour, morning_enabled, midday_hour, midday_enabled, evening_hour, evening_enabled, command_check_minutes, process_interval_minutes, weekly_enabled, weekly_hour>", "value": <new value (number or boolean)>, "description": "<human-readable summary of the change>"}',
+      'Extract schedule change intent. Return only JSON.');
+  } catch (e) {
+    Logger.log('[WARN] Schedule parse failed: ' + e.message);
+    parseResult = null;
+  }
+
+  if (parseResult && parseResult.field && parseResult.value !== undefined) {
+    prefs.schedule = prefs.schedule || {};
+    prefs.schedule[parseResult.field] = parseResult.value;
+    var ok = writeJson('FILE_PREFERENCES', prefs);
+    if (ok) {
+      replyInThread_(thread, quickCard_('Schedule Updated', escapeHtml(parseResult.description || 'Changed ' + parseResult.field + ' to ' + parseResult.value)));
+    } else {
+      replyInThread_(thread, quickCard_('Schedule Error', 'Could not save — FILE_PREFERENCES not initialized. Run setupHermes() first.'));
+    }
+  } else {
+    replyInThread_(thread, quickCard_('Schedule', 'Could not parse that schedule change. Try: "set morning briefing to 9am" or "disable midday check".'));
+  }
 }
 
 function handlePreference_(parsed, thread) {
-  replyInThread_(thread, quickCard_('Preference', 'Preference changes require editing preferences.json in Drive.'));
+  var prefs = getPreferences_();
+
+  // Map known preference keys the user might refer to
+  var parseResult;
+  try {
+    parseResult = callOracleJson_('command_parsing',
+      'Parse this preference change request and return JSON.\n' +
+      'Request: "' + (parsed.originalText || '') + '"\n' +
+      'Current preferences (abbreviated): ' + JSON.stringify({ auto_actions: prefs.auto_actions, urgent_interrupt_threshold: prefs.urgent_interrupt_threshold, max_urgent_per_briefing: prefs.max_urgent_per_briefing }) + '\n\n' +
+      'Return JSON: {"path": "<dot-path like auto_actions.archive_patterns>", "action": "set|append|remove", "value": <new value>, "description": "<what changed>"}',
+      'Extract preference change intent. Return only JSON.');
+  } catch (e) {
+    Logger.log('[WARN] Preference parse failed: ' + e.message);
+    parseResult = null;
+  }
+
+  if (parseResult && parseResult.path && parseResult.action) {
+    // Apply the change using dot-path navigation
+    try {
+      applyPrefChange_(prefs, parseResult.path, parseResult.action, parseResult.value);
+      var ok = writeJson('FILE_PREFERENCES', prefs);
+      if (ok) {
+        replyInThread_(thread, quickCard_('Preference Updated', escapeHtml(parseResult.description || parseResult.path + ' → ' + JSON.stringify(parseResult.value))));
+      } else {
+        replyInThread_(thread, quickCard_('Preference Error', 'Could not write preferences.'));
+      }
+    } catch (applyErr) {
+      replyInThread_(thread, quickCard_('Preference Error', escapeHtml(applyErr.message)));
+    }
+  } else {
+    replyInThread_(thread, quickCard_('Preference', 'Could not parse that preference change. Try: "archive all emails from noreply@*" or "increase urgent threshold to 9".'));
+  }
+}
+
+/**
+ * Apply a preference change using a dot-path.
+ * @private
+ */
+function applyPrefChange_(prefs, path, action, value) {
+  var parts = path.split('.');
+  var obj = prefs;
+  for (var i = 0; i < parts.length - 1; i++) {
+    if (!obj[parts[i]]) obj[parts[i]] = {};
+    obj = obj[parts[i]];
+  }
+  var key = parts[parts.length - 1];
+
+  if (action === 'set') {
+    obj[key] = value;
+  } else if (action === 'append') {
+    if (!Array.isArray(obj[key])) obj[key] = [];
+    if (obj[key].indexOf(value) === -1) obj[key].push(value);
+  } else if (action === 'remove') {
+    if (Array.isArray(obj[key])) {
+      obj[key] = obj[key].filter(function(v) { return v !== value; });
+    }
+  }
 }
 
 function handleContextUpdate_(parsed, thread) {

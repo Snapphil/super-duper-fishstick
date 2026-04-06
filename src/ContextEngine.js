@@ -15,6 +15,103 @@ function getActiveTheme_() {
   return getProp('ACTIVE_THEME') || 'midnight';
 }
 
+// ============ WIKI CONTEXT READER ============
+
+/**
+ * Read compiled wiki content for injection into prompts.
+ * Reads index, commitments, and most recent people profiles.
+ * @param {number} maxPeople - Max people profiles to include (default 6)
+ * @returns {string} Formatted wiki context block
+ */
+function readWikiContext_(maxPeople) {
+  maxPeople = maxPeople || 6;
+  var parts = [];
+
+  try {
+    var index = readWikiFile_('index.md');
+    if (index && index.trim().length > 10) {
+      parts.push('[ WIKI / INDEX ]\n' + truncate(index, 500));
+    }
+  } catch (e) { Logger.log('[WARN] wiki index: ' + e.message); }
+
+  try {
+    var commitments = readWikiFile_('commitments.md');
+    if (commitments && commitments.trim().length > 10) {
+      parts.push('[ WIKI / COMMITMENTS ]\n' + truncate(commitments, 1000));
+    }
+  } catch (e) { Logger.log('[WARN] wiki commitments: ' + e.message); }
+
+  try {
+    var wikiFolder = getWikiFolder_();
+    if (wikiFolder) {
+      var pf = wikiFolder.getFoldersByName('people');
+      if (pf.hasNext()) {
+        var peopleFolder = pf.next();
+        var files = peopleFolder.getFiles();
+        var peopleFiles = [];
+        while (files.hasNext()) {
+          var file = files.next();
+          peopleFiles.push(file);
+        }
+        // Sort by most recently updated
+        peopleFiles.sort(function(a, b) {
+          return b.getLastUpdated().getTime() - a.getLastUpdated().getTime();
+        });
+        var count = Math.min(maxPeople, peopleFiles.length);
+        for (var i = 0; i < count; i++) {
+          try {
+            var content = peopleFiles[i].getBlob().getDataAsString();
+            var label = peopleFiles[i].getName().replace('.md', '');
+            parts.push('[ WIKI / PEOPLE / ' + label.toUpperCase() + ' ]\n' + truncate(content, 600));
+          } catch (fe) { /* skip broken file */ }
+        }
+      }
+    }
+  } catch (e) { Logger.log('[WARN] wiki people: ' + e.message); }
+
+  return parts.length > 0 ? parts.join('\n\n') : '(No wiki content compiled yet — will populate as emails are processed.)';
+}
+
+/**
+ * Build the system persona prompt used across all ORACLE calls.
+ * This is the "identity illusion" — Hermes always knows who it is.
+ */
+function buildHermesPersonaPrompt_() {
+  var agentMd = getAgentMd_();
+  var schema = getParsedSchema_();
+  var t = getTheme();
+  var now = new Date();
+
+  return [
+    'You are Hermes — a deeply personal AI email agent.',
+    '',
+    'Your core purpose: act as an intelligent, knowledgeable extension of the person you serve.',
+    'You have persistent memory (wiki), compiled from every email you have processed.',
+    'You know this person\'s commitments, relationships, patterns, and preferences.',
+    '',
+    '=== WHO YOU SERVE ===',
+    truncate(agentMd, 600),
+    '',
+    '=== THEIR COMMUNICATION STYLE (follow exactly) ===',
+    schema.communicationStyle || 'Professional but warm. Direct. No corporate filler.',
+    '',
+    '=== YOUR BEHAVIORAL RULES ===',
+    '1. NEVER ask permission for actions you can execute directly.',
+    '2. NEVER ask clarifying questions unless the request is genuinely ambiguous.',
+    '3. NEVER say "I would be happy to...", "Certainly!", "Of course!", or any hollow opener.',
+    '4. When asked what you know — enumerate it from your wiki and memory. Do not be vague.',
+    '5. Be direct. Match the sender\'s energy. Short reply to short message.',
+    '6. You are confident about what you know. Qualify only when genuinely uncertain.',
+    '7. Update your understanding from every interaction — you get smarter over time.',
+    '',
+    '=== CURRENT TIME ===',
+    now.toISOString() + ' — ' + ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][now.getDay()],
+    '',
+    '=== VISUAL THEME ===',
+    'Active theme: ' + t.name + ' | Style: ' + (t.style || 'dark minimal')
+  ].join('\n');
+}
+
 function getThemeList() {
   return ['default', 'dark', 'light', 'neon', 'brutalist', 'minimal', 'pastel', 'corporate', 'playful'];
 }
@@ -22,95 +119,90 @@ function getThemeList() {
 // ============ MAIN PROMPT BUILDERS ============
 
 /**
- * Build comprehensive prompt for command processing.
- * Includes memory, schedule, identity, conversation history.
+ * Build comprehensive prompt for command processing (intent parsing only).
+ * Includes memory, schedule, identity, conversation history, and wiki context.
  */
 function buildCommandPrompt_() {
-  const agentMd = getAgentMd_();
-  const pending = getAllPendingApprovals_();
-  const map = getBriefingMap_();
-  const deadlines = getDeadlines_();
-  const prefs = getPreferences_();
-  const graph = getPeopleGraph_();
-  const lastAction = getProp('LAST_ACTION_CONTEXT') || 'none';
-  const lastResponse = getLastHermesResponse_();
-  const memory = getMemoryDigest_();
-  const now = new Date();
-  const theme = getActiveTheme_();  // FIXED: use alias, canonical setTheme/getActiveTheme are in ThemeEngine.js
-
-  // Known people summary (token-optimized)
-  const knownPeople = Object.values(graph.nodes || {})
-    .map(p => `${p.name} (${p.email}) | ${p.type} | imp:${p.importance}`)
-    .join('\n')
-    || '(none)';
+  var agentMd = getAgentMd_();
+  var pending = getAllPendingApprovals_();
+  var map = getBriefingMap_();
+  var prefs = getPreferences_();
+  var lastAction = getProp('LAST_ACTION_CONTEXT') || 'none';
+  var lastResponse = getLastHermesResponse_();
+  var memory = getMemoryDigest_();
+  var wikiCtx = readWikiContext_(3);  // Inject top 3 people profiles
+  var now = new Date();
+  var theme = getActiveTheme_();
 
   // Pending approvals summary
-  const pendingSummary = pending.map(p => {
-    const code = Object.entries(map).find(([k, v]) => v === p.id)?.[0] || '?';
-    return `#${code}: [${p.type}] ${p.subject} — urgency: ${p.urgency}`;
+  var pendingSummary = pending.map(function(p) {
+    var code = '?';
+    var entries = Object.entries ? Object.entries(map) : Object.keys(map).map(function(k) { return [k, map[k]]; });
+    for (var i = 0; i < entries.length; i++) {
+      if (entries[i][1] === p.id) { code = entries[i][0]; break; }
+    }
+    return '#' + code + ': [' + p.type + '] ' + p.subject + ' — urgency: ' + p.urgency;
   }).join('\n') || '(None.)';
 
-  return `
-You are Hermes ← an intelligent email agent with research AND memory capabilities.
-
-You have PERSISTENT MEMORY stored in files. You remember deadlines, people, conversations, and research insights.
-
-You understand natural language, follow-ups, context, slang, ambiguity.
-
-═══ YOUR HUMAN ═══
- ${agentMd}
-
-═══ CONVERSATION ═══
- ${formatConversationHistory_()}
-
-═══ LAST RESPONSE ═══
- ${truncate(lastResponse.full || '(None.)', 600)}
-
-═══ MY MEMORY (what I already know) ═══
- ${memory.full}
-
-═══ DESIGN STATE ═══
-Active Theme: ${theme}
-
-═══ PENDING APPROVALS ═══
- ${pendingSummary || 'None.'}
-
-═══ LAST ACTION ═══
- ${lastAction}
-
-═══ SCHEDULE ═══
-Cmd: ${(prefs.schedule && prefs.schedule.command_check_minutes) || 2}m | Proc: ${(prefs.schedule && prefs.schedule.process_interval_minutes) || 10}m
-AM: ${(prefs.schedule && prefs.schedule.morning_enabled) !== false ? ((prefs.schedule && prefs.schedule.morning_hour) || 8) + ':00' : 'off'}
-PM: ${(prefs.schedule && prefs.schedule.evening_enabled) !== false ? ((prefs.schedule && prefs.schedule.evening_hour) || 21) + ':00' : 'off'}
-═══ NOW ═══
- ${now.toISOString()} (${getDayName(now)})
-
-═══ TASK ═══
-Parse the human's message. Return JSON:
-
-{
-  "intent": "approve|reject|edit|approve_all|compose|reply_to|query|brief_me|schedule_change|preference|context_update|pause|resume|status|show_deadlines|show_people|show_memory|design_change|research|follow_up|conversation",
-  "shortcode": null,
-  "modifications": null,
-  "compose_to": null,
-  "compose_subject": null,
-  "compose_instructions": null,
-  "query_target": null,
-  "schedule_target": null,
-  "schedule_value": null,
-  "schedule_enabled": null,
-  "preference_rule": null,
-  "preference_type": null,
-  "context_text": null,
-  "pause_hours": null,
-  "design_description": "Desired design/theme if design_change intent, null otherwise",
-  "research_question": "Rephrased research question with specifics. Null if not research.",
-  "research_depth": "deep|quick",
-  "conversational_response": "Under 50 words, null if not conversation.",
-  "confidence": 0.0-1.0,
-  "reasoning": "brief"
-}
-`.trim();
+  return [
+    'You are Hermes — a personal AI email agent parsing a user command.',
+    '',
+    '═══ YOUR HUMAN ═══',
+    truncate(agentMd, 500),
+    '',
+    '═══ COMPILED WIKI KNOWLEDGE ═══',
+    truncate(wikiCtx, 1500),
+    '',
+    '═══ MEMORY DIGEST ═══',
+    truncate(memory.full, 1200),
+    '',
+    '═══ CONVERSATION HISTORY ═══',
+    formatConversationHistory_(),
+    '',
+    '═══ LAST RESPONSE ═══',
+    truncate(lastResponse.full || '(None.)', 400),
+    '',
+    '═══ PENDING APPROVALS ═══',
+    pendingSummary,
+    '',
+    '═══ SCHEDULE ═══',
+    'Cmd: ' + ((prefs.schedule && prefs.schedule.command_check_minutes) || 2) + 'm | ' +
+    'Proc: ' + ((prefs.schedule && prefs.schedule.process_interval_minutes) || 10) + 'm | ' +
+    'AM: ' + ((prefs.schedule && prefs.schedule.morning_enabled) !== false ? ((prefs.schedule && prefs.schedule.morning_hour) || 8) + ':00' : 'off') + ' | ' +
+    'PM: ' + ((prefs.schedule && prefs.schedule.evening_enabled) !== false ? ((prefs.schedule && prefs.schedule.evening_hour) || 21) + ':00' : 'off'),
+    '',
+    '═══ NOW ═══',
+    now.toISOString() + ' (' + getDayName(now) + ') | Theme: ' + theme,
+    '',
+    '═══ LAST ACTION ═══',
+    lastAction,
+    '',
+    '═══ TASK ═══',
+    'Parse the human\'s message. Return JSON only:',
+    '',
+    '{',
+    '  "intent": "approve|reject|edit|approve_all|compose|reply_to|query|brief_me|schedule_change|preference|context_update|pause|resume|status|show_deadlines|show_people|show_memory|design_change|research|follow_up|conversation",',
+    '  "shortcode": null,',
+    '  "modifications": null,',
+    '  "compose_to": null,',
+    '  "compose_subject": null,',
+    '  "compose_instructions": null,',
+    '  "query_target": null,',
+    '  "schedule_field": null,',
+    '  "schedule_value": null,',
+    '  "schedule_enabled": null,',
+    '  "preference_key": null,',
+    '  "preference_value": null,',
+    '  "context_text": null,',
+    '  "pause_hours": null,',
+    '  "design_description": null,',
+    '  "research_question": null,',
+    '  "research_depth": "deep|quick",',
+    '  "days": null,',
+    '  "confidence": 0.0,',
+    '  "reasoning": "brief"',
+    '}'
+  ].join('\n');
 }
 
 /**
