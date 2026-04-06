@@ -8,38 +8,15 @@
  */
 
 // ============ THEME STATE ============
+// NOTE: setTheme() and getActiveTheme() are canonical in ThemeEngine.js
+// This alias avoids duplicate global function errors in Apps Script.
 
-let _activeTheme = null;
-
-function setTheme(themeDescription) {
-  if (!themeDescription) return;
-  setProp('ACTIVE_THEME', themeDescription);
-  _activeTheme = themeDescription;
-}
-
-function getActiveTheme() {
-  if (_activeTheme) return _activeTheme;
-  return getProp('ACTIVE_THEME') || 'default';
+function getActiveTheme_() {
+  return getProp('ACTIVE_THEME') || 'midnight';
 }
 
 function getThemeList() {
-  return ['default','dark','light','neon','brutalist','minimal','pastel','corporate','playful'];
-}
-
-function getThemePromptContext() {
-  const theme = getActiveTheme();
-  
-  return `
-═══ ACTIVE DESIGN SYSTEM ═══
-Current theme: ${theme}
-
-STRICT RULES:
-• You MUST follow this theme in ALL outputs
-• Use consistent colors, tone, and spacing
-• Do NOT revert to default unless explicitly told
-• Design consistency > creativity
-• Emails must visually reflect this theme clearly
-`;
+  return ['default', 'dark', 'light', 'neon', 'brutalist', 'minimal', 'pastel', 'corporate', 'playful'];
 }
 
 // ============ MAIN PROMPT BUILDERS ============
@@ -59,20 +36,20 @@ function buildCommandPrompt_() {
   const lastResponse = getLastHermesResponse_();
   const memory = getMemoryDigest_();
   const now = new Date();
-  const theme = getActiveTheme();
-  
+  const theme = getActiveTheme_();  // FIXED: use alias, canonical setTheme/getActiveTheme are in ThemeEngine.js
+
   // Known people summary (token-optimized)
   const knownPeople = Object.values(graph.nodes || {})
     .map(p => `${p.name} (${p.email}) | ${p.type} | imp:${p.importance}`)
     .join('\n')
     || '(none)';
-  
+
   // Pending approvals summary
   const pendingSummary = pending.map(p => {
-    const code = Object.entries(map).find(([k,v]) => v === p.id)?.[0] || '?';
+    const code = Object.entries(map).find(([k, v]) => v === p.id)?.[0] || '?';
     return `#${code}: [${p.type}] ${p.subject} — urgency: ${p.urgency}`;
   }).join('\n') || '(None.)';
-  
+
   return `
 You are Hermes ← an intelligent email agent with research AND memory capabilities.
 
@@ -102,10 +79,9 @@ Active Theme: ${theme}
  ${lastAction}
 
 ═══ SCHEDULE ═══
-Cmd: ${prefs.schedule?.command_check_minutes || 2}m | Proc: ${prefs.schedule?.process_interval_minutes || 10}m
-AM: ${prefs.schedule?.morning_enabled !== false ? (prefs.schedule.morning_hour||8)+':00' : 'off'}
-PM: ${prefs.schedule?.evening_enabled !== false ? (prefs.schedule.evening_hour||21)+':00' : 'off'}
-
+Cmd: ${(prefs.schedule && prefs.schedule.command_check_minutes) || 2}m | Proc: ${(prefs.schedule && prefs.schedule.process_interval_minutes) || 10}m
+AM: ${(prefs.schedule && prefs.schedule.morning_enabled) !== false ? ((prefs.schedule && prefs.schedule.morning_hour) || 8) + ':00' : 'off'}
+PM: ${(prefs.schedule && prefs.schedule.evening_enabled) !== false ? ((prefs.schedule && prefs.schedule.evening_hour) || 21) + ':00' : 'off'}
 ═══ NOW ═══
  ${now.toISOString()} (${getDayName(now)})
 
@@ -139,13 +115,21 @@ Parse the human's message. Return JSON:
 
 /**
  * Build classification prompt for SCRIBE (fast, lightweight).
+ * @param {{ priorityContacts?: string[] }} schemaOpts from parseHermesSchemaMd_
  */
-function buildClassificationPrompt_() {
+function buildClassificationPrompt_(schemaOpts) {
   const prefs = getPreferences_();
   const lastAction = getProp('LAST_ACTION_CONTEXT') || 'classify';
-  
+  const schemaOptsSafe = schemaOpts || {};
+  const pri = Array.isArray(schemaOptsSafe.priorityContacts) && schemaOptsSafe.priorityContacts.length
+    ? schemaOptsSafe.priorityContacts.join(', ')
+    : '(none configured)';
+
   return `
 Classify this incoming email precisely.
+
+PRIORITY CONTACTS (always treat as high-signal; surface prominently, bump importance/urgency appropriately):
+${pri}
 
 RESPOND JSON ONLY:
 {
@@ -170,10 +154,11 @@ RESPOND JSON ONLY:
  */
 function buildForgePrompt_(purpose, data, additionalInstructions) {
   const themeCtx = getThemePromptContext();
+  const t = getTheme();
   const now = new Date();
   const timeStr = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
   const dateStr = now.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
-  
+
   const sys = `You are Hermes — a world-class email designer generating mobile-safe HTML.
 
  ${themeCtx}
@@ -181,8 +166,9 @@ function buildForgePrompt_(purpose, data, additionalInstructions) {
 ABSOLUTE RULES (breaking these = broken email):
 
 LAYOUT:
-• All layout uses table cellpadding="0" cellspacing="0" border="0" width="100%" — NEVER display:flex or display:grid
-• Width 100% on layout tables
+• Ensure mobile and web compatibility by strictly using fluid wrappers and percentage-based sizing.
+• All layout uses <table cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width: 100%;"> — NEVER display:flex or display:grid
+• Use padding for spacing rather than margins (margins are often ignored by email clients).
 • ALL styles INLINE (<div style="...">) — no <style> blocks
 • Close EVERY tag. Every <table> needs </table>. Every <td> needs </td>. Every <div> needs </div>.
 • Keep nesting shallow — max 4 levels of tables
@@ -192,7 +178,7 @@ CONTENT:
 • Instead use these HTML-safe alternatives: •Bullet: &#8226; •Check: &#10003; •Cross: &#10007; •Star: &#9733; •Arrow right: &#8594; •Arrow up-right: &#8599; •Warning: &#9888;
 
 TYPOGRAPHY:
-• Put font-family:\${t.font} on EVERY element that has text
+• Put font-family:${t.font} on EVERY element that has text
 • ONLY web-safe fonts — no Google Fonts
 • Keep font-size between 10px and 28px
 • Use font-weight:800 for big numbers, 700 for headings, 400 for body
@@ -207,7 +193,7 @@ STRUCTURE:
 Output ONLY the inner HTML. It will be wrapped. Start with header, then content, then footer.`;
 
   const dataStr = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
-  
+
   return {
     systemPrompt: sys,
     userPrompt: `PURPOSE: ${purpose}
@@ -233,29 +219,29 @@ function getConversationHistory_() {
 
 function addConversationTurn_(role, text) {
   let history = getConversationHistory_();
-  
+
   history.push({
     role: role,
     text: truncate(text, 500),
     timestamp: new Date().toISOString()
   });
-  
+
   // Keep only recent turns
   while (history.length > MAX_CONVERSATION_TURNS) {
     history.shift();
   }
-  
+
   // Expire old turns (older than 2 hours = new conversation)
   const cutoff = Date.now() - CONVERSATION_TTL_MS;
   history = history.filter(t => new Date(t.timestamp).getTime() >= cutoff);
-  
+
   setProp('CONVERSATION_HISTORY', JSON.stringify(history));
 }
 
 function formatConversationHistory_() {
   const history = getConversationHistory_();
   if (history.length === 0) return 'No recent conversation.';
-  
+
   return history.map(t => {
     const who = t.role === 'user' ? '👤 HUMAN' : '🤖 HERMES';
     return `${who}: ${t.text}`;
@@ -283,5 +269,5 @@ function clearConversation_() {
 // ============ HELPERS ============
 
 function getDayName(d) {
-  return ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][d.getDay()];
+  return ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][d.getDay()];
 }

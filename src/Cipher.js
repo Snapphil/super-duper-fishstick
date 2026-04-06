@@ -31,17 +31,17 @@ function generatedId_() {
 // ============ DATE FORMATTING ============
 
 function formatDateFull(date) {
-  const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   let h = date.getHours();
   const ampm = h >= 12 ? 'PM' : 'AM';
   h = h % 12 || 12;
-  const m = date.getMinutes().toString().padStart(2,'0');
+  const m = date.getMinutes().toString().padStart(2, '0');
   return `${days[date.getDay()]}, ${months[date.getMonth()]} ${date.getDate()}, ${h}:${m} ${ampm}`;
 }
 
 function formatDateShort(date) {
-  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   return `${months[date.getMonth()]} ${date.getDate()}`;
 }
 
@@ -57,43 +57,43 @@ function todayStr_() {
  */
 function sanitizeEmailHtml_(html) {
   if (!html) return '';
-  
+
   // 1. Replace Unicode emoji with safe alternatives (comprehensive map)
   const emojiMap = {
     // Emoticons
-    '😀':'😁','😂':'🤣','😊':'☺️','❤️':'♥️','👍':'👍',
-    '✅':'✔️','⚠️':'⚠️','💡':'💡','🔥':'🔥','⭐':'⭐',
+    '😀': '😁', '😂': '🤣', '😊': '☺️', '❤️': '♥️', '👍': '👍',
+    '✅': '✔️', '⚠️': '⚠️', '💡': '💡', '🔥': '🔥', '⭐': '⭐',
     // Symbols
-    '→':'→','←':'←','↑':'↑','↓':'↓','•':'•',
+    '→': '→', '←': '←', '↑': '↑', '↓': '↓', '•': '•',
     // Misc Unicode ranges that break Gmail
-    '\u{1F600}':'[:smile:]','\u{1F604}':'[:laugh]',
-    '\u{1F44D}':'[:thumbup:]','\u{2705}':'[:check:]',
-    '\u{26A0}':'[:warning:]','\u{1F4A1}':'[:bulb:]',
-    '\u{2B50}':'[:star:]','\u{1F525}':'[:fire:]',
-    '\u{2728}':'[:sparkles:]','\u{1F4DD}':'[:memo:]',
-    '\u{1F4C4}':'[:file:]','\u{1F4E5}':'[:inbox:]',
-    '\u{1F30D}':'[:globe:]','\u{1F3AF}':'[:target:]',
-    '\u{1F680}':'[:rocket:]','\u{2699}':'[:gear:]',
-    '\u{1F50D}':'[:search:]','\u{1F4CA}':'[:chart:]',
-    '\u{1F4CB}':'[:clipboard:]','\u{270F}':'[:pencil:]',
-    '\u{1F3AF}':'[:dart:]','\u{1F3AD}':'[:stage:]',
-    '\u{1F4A1}':'[:bulb:]','\u{1F6E0}':'[:construction:]',
-    '\u{2696}':'[:balance:]','\u{1F91D}':'[:handshake:]',
-    '\u{1F4BC}':'[:briefcase:]','\u{1F4B0}':'[:money:]',
-    '\u{2601}':'[:cloud:]','\u{26C4}':'[:snowman:]',
-    '\u{1F300}':'[:cyclone:]','\u{1F3D4}':'[:snowflake:]'
+    '\u{1F600}': '[:smile:]', '\u{1F604}': '[:laugh]',
+    '\u{1F44D}': '[:thumbup:]', '\u{2705}': '[:check:]',
+    '\u{26A0}': '[:warning:]', '\u{1F4A1}': '[:bulb:]',
+    '\u{2B50}': '[:star:]', '\u{1F525}': '[:fire:]',
+    '\u{2728}': '[:sparkles:]', '\u{1F4DD}': '[:memo:]',
+    '\u{1F4C4}': '[:file:]', '\u{1F4E5}': '[:inbox:]',
+    '\u{1F30D}': '[:globe:]', '\u{1F3AF}': '[:target:]',
+    '\u{1F680}': '[:rocket:]', '\u{2699}': '[:gear:]',
+    '\u{1F50D}': '[:search:]', '\u{1F4CA}': '[:chart:]',
+    '\u{1F4CB}': '[:clipboard:]', '\u{270F}': '[:pencil:]',
+    '\u{1F3AF}': '[:dart:]', '\u{1F3AD}': '[:stage:]',
+    '\u{1F4A1}': '[:bulb:]', '\u{1F6E0}': '[:construction:]',
+    '\u{2696}': '[:balance:]', '\u{1F91D}': '[:handshake:]',
+    '\u{1F4BC}': '[:briefcase:]', '\u{1F4B0}': '[:money:]',
+    '\u{2601}': '[:cloud:]', '\u{26C4}': '[:snowman:]',
+    '\u{1F300}': '[:cyclone:]', '\u{1F3D4}': '[:snowflake:]'
   };
-  
+
   for (const [unicode, replacement] of Object.entries(emojiMap)) {
     html = html.split(unicode).join(replacement);
   }
-  
+
   // 2. Strip style blocks (Gmail removes them anyway, causes issues)
   html = html.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
-  
+
   // 3. Strip script blocks (security)
   html = html.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
-  
+
   // 4. Close unclosed common tags (conservative approach)
   const tagPairs = [
     [/\<div([^>]*)>/gi, '</div>'],
@@ -105,7 +105,7 @@ function sanitizeEmailHtml_(html) {
     [/\<i([^>]*)>/gi, '</i>'],
     [/\<em([^>]*)>/gi, '</em>']
   ];
-  
+
   for (const [openPattern, closeTag] of tagPairs) {
     const opens = (html.match(openPattern) || []).length;
     const closes = (html.split(closeTag).length - 1);
@@ -114,15 +114,15 @@ function sanitizeEmailHtml_(html) {
       html += closeTag.repeat(missing);
     }
   }
-  
+
   // 5. Remove MSO conditionals (Outlook artifacts)
   html = html.replace(/<!--\[if[^\]]*\]>[\s\S]*?<!\[endif\]-->/gi, '');
-  
-  // 6. Final sanity check
-  if (html.trim().length < 20) {
-    return '<div style="padding:20px;color:#666;font-family:sans-serif;">Content generation failed. Try <code>brief me</code> instead.</div>';
+
+  // 6. Fallback if empty
+  if (html.trim().length === 0) {
+    return '*(empty message)*';
   }
-  
+
   return html;
 }
 
@@ -154,7 +154,7 @@ function extractReplyText(rawBody) {
     /^>+.+Sent:.+$/m,
     /^>.+/m
   ];
-  
+
   let text = rawBody;
   for (const sep of separators) {
     const match = text.search(sep);
@@ -172,38 +172,60 @@ function extractEmailAddress(from) {
   return match ? match[1].toLowerCase().trim() : from.toLowerCase().trim();
 }
 
+/**
+ * Stable Gmail web URL for a thread (audit trail / wiki citations).
+ * @param {string} threadId
+ * @returns {string}
+ */
+function gmailThreadUrl_(threadId) {
+  if (!threadId) return '';
+  return 'https://mail.google.com/mail/u/0/#inbox/' + String(threadId);
+}
+
+/**
+ * One-line blockquote for commitment verification (single line of text).
+ * @param {string} quote
+ * @returns {string}
+ */
+function formatCommitmentQuoteLine_(quote) {
+  var q = (quote || '').replace(/\s+/g, ' ').trim();
+  if (!q) return '';
+  if (q.length > 120) q = q.substring(0, 117) + '...';
+  return '  > "' + q.replace(/"/g, "'") + '"';
+}
+
 // ============ QUICK COMMAND PARSER ============
 
-function quickParseCommand(text) {
+function quickParseCommand_(text) {  // FIXED: was quickParseCommand (missing _), caused ReferenceError in Main.js
   const t = (text || '').trim().toLowerCase();
-  
+
   // Approval shortcuts
   const approveMatch = t.match(/#?(\d+)\s*(yes|approve|send|ok|confirmed)/i);
   if (approveMatch) {
     return { intent: 'approve', shortcode: approveMatch[1] };
   }
-  
+
   // Reject shortcut
   const rejectMatch = t.match(/#?(\d+)\s*(skip|no|reject|cancel|discard)/i);
   if (rejectMatch) {
     return { intent: 'reject', shortcode: rejectMatch[1] };
   }
-  
+
   // Bulk approve
   if (/^all\s*(yes|approve|send)/i.test(t)) {
     return { intent: 'approve_all' };
   }
-  
+
   // Brief me
   if (/(brief\s*me|briefing|summary|summarize)/i.test(t) && /(what'?s\s*up|what\s*did\s*i\s*miss)/i.test(t)) {
     return { intent: 'brief_me' };
   }
-  
+
   // Status
   if (/^status$/i.test(t)) {
     return { intent: 'status' };
   }
-  
+
   // Pause
   const pauseMatch = t.match(/pause(?:\s+(?:for\s+)?)?(\d+)\s*(h|hr|hours?|d|days?)?/i);
   if (pauseMatch) {
@@ -212,16 +234,16 @@ function quickParseCommand(text) {
     if (/^d/i.test(unit)) hours *= 24;
     return { intent: 'pause', hours };
   }
-  
+
   // Resume
   if (/^resume$/i.test(t)) {
     return { intent: 'resume' };
   }
-  
+
   // Show deadlines
   if (/(show\s+)?deadlines/i.test(t)) {
     return { intent: 'show_deadlines' };
   }
-  
+
   return null;
 }

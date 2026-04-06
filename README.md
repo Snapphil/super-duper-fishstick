@@ -1,6 +1,6 @@
 # Hermes
 
-A personal AI email agent that lives in Gmail. Built on Google Apps Script + Gemini.
+A personal AI email agent that lives in Gmail. Built on **Google Apps Script** + **OpenAI** (classification, extraction, reply/briefing HTML). Compiled markdown lives in Google Drive (`raw/`, `wiki/`) for Obsidian and audit trails.
 
 ## Quick Start
 

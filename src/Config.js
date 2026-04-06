@@ -4,8 +4,8 @@
  * PANTHEON SYSTEM: Core Configuration & Constants
  * 
  * AGENTS:
- * - ORACLE: Gemini Pro (Deep reasoning, generation)
- * - SCRIBE: Gemini Flash (Fast classification, parsing)
+ * - ORACLE: OpenAI (gpt-5.4-mini)
+ * - SCRIBE: OpenAI (gpt-5.4-mini)
  * 
  * STORAGE: VAULT (Google Drive JSON files)
  * COMM: RELAY (Gmail API wrapper)
@@ -18,7 +18,7 @@
 const AGENTS = {
   ORACLE: {
     id: 'oracle',
-    model:'gemini-3.1-pro-preview',  // Primary reasoning engine
+    model: 'gpt-5.4-mini',  // Primary reasoning engine
     temperature: 0.7,        // Creative but grounded
     maxTokens: 4096,         // Full email generation budget
     role: 'deep_reasoning',
@@ -31,10 +31,10 @@ const AGENTS = {
     ],
     costTier: 'high'  // Use sparingly
   },
-  
+
   SCRIBE: {
     id: 'scribe',
-    model: 'gemini-3-flash-preview',  // Fast classification engine
+    model: 'gpt-5.4-mini',  // Fast classification engine
     temperature: 0.1,        // Deterministic, consistent
     maxTokens: 1024,          // Lightweight tasks only
     role: 'fast_classification',
@@ -54,20 +54,21 @@ const AGENTS = {
 const VAULT = {
   // Core identity files
   AGENT_MD: 'FILE_AGENT_MD',           // Agent personality config
+  SCHEMA_MD: 'FILE_SCHEMA_MD',         // Operating preferences (human-edited; same structure as repo schema.md)
   PREFERENCES: 'FILE_PREFERENCES',     // User preferences & schedule
-  
+
   // Memory banks
   DEADLINES: 'FILE_DEADLINES',         // Active deadlines tracker
   PEOPLE_GRAPH: 'FILE_PEOPLE_GRAPH',   // Relationship network
   INTERACTIONS: 'FILE_INTERACTIONS',   // Communication history
   ACTIVE_THREADS: 'FILE_ACTIVE_THREADS',// Pending conversations
   COMPLETED: 'FILE_COMPLETED',         // Archive
-  
+
   // Operational logs
   EXECUTION_LOG: 'FILE_EXECUTION_LOG', // Action history
   DAILY_SUMMARIES: 'FILE_DAILY_SUMMARIES', // Daily digests
   PENDING_APPROVALS: 'FILE_PENDING_APPROVALS', // Drafts awaiting review
-  
+
   // Learning & state
   BRIEFING_MAP: 'BRIEFING_MAP',        // Briefing queue
   CLUSTERS: 'FILE_CLUSTERS',           // Email clustering data
@@ -80,7 +81,7 @@ const RELAY = {
   MAX_SEND_PER_DAY: 20,         // Safety throttle
   MAX_URGENT_IN_BRIEFING: 3,    // Urgent items cap
   SEND_QUOTA_RESET_HOURS: 24,
-  
+
   // Search optimization
   SEARCH_BATCH_SIZE: 25,
   SEARCH_MAX_RESULTS: 75,
@@ -92,13 +93,14 @@ const RELAY = {
 const CHRONOS = {
   COMMAND_CHECK_MINUTES: 2,      // How often to check for user commands
   PROCESS_INTERVAL_MINUTES: 10,  // Email processing frequency
-  
+
   // Briefing schedule (can be overridden in Preferences)
+  // NOTE: weekly.day uses ScriptApp.WeekDay.SUNDAY — resolved at runtime in Setup.js
   BRIEFINGS: {
     morning: { hour: 8, enabled: true, label: 'Morning Briefing' },
     midday: { hour: 13, enabled: true, label: 'Midday Check' },
     evening: { hour: 21, enabled: true, label: 'Evening Wrap-up' },
-    weekly: { day: WeekDay.SUNDAY, hour: 19, enabled: true, label: 'Weekly Report' }
+    weekly: { hour: 19, enabled: true, label: 'Weekly Report' }
   }
 };
 
@@ -117,7 +119,7 @@ const IDENTITY = {
 const AESTHETE = {
   DEFAULT_THEME: 'midnight',
   Fallback_THEME: 'default',
-  
+
   // Strict rendering rules
   RULES: {
     MAX_EMAIL_LENGTH: 3000,
@@ -136,41 +138,41 @@ let _cfgCache = null;
 
 function getConfig() {
   if (_cfgCache) return _cfgCache;
-  
+
   const props = PropertiesService.getScriptProperties();
-  
+
   _cfgCache = {
     // API Keys
-    GEMINI_API_KEY: props.getProperty('GEMINI_API_KEY') || '',
-    
+    OPENAI_API_KEY: props.getProperty('OPENAI_API_KEY') || '',
+
     // Agent selection
     ORACLE: AGENTS.ORACLE,
     SCRIBE: AGENTS.SCRIBE,
-    
+
     // Models
-    GEMINI_MODEL: props.getProperty('GEMINI_MODEL') || AGENTS.SCRIBE.model,
-    GEMINI_PRO_MODEL: props.getProperty('GEMINI_PRO_MODEL') || AGENTS.ORACLE.model,
-    GEMINI_BASE_URL: 'https://generativelanguage.googleapis.com/v1beta/models/',
-    
+    OPENAI_MODEL: props.getProperty('OPENAI_MODEL') || AGENTS.SCRIBE.model,
+    OPENAI_PRO_MODEL: props.getProperty('OPENAI_PRO_MODEL') || AGENTS.ORACLE.model,
+    OPENAI_BASE_URL: 'https://api.openai.com/v1/responses',
+
     // VAULT root
     ROOT_FOLDER_ID: props.getProperty('ROOT_FOLDER_ID') || '',
-    
+
     // File mappings (dynamic from VAULT constant)
     ...VAULT,
-    
+
     // Identity
     ...IDENTITY,
-    
+
     // Constraints
     ...RELAY,
     ...CHRONOS,
     ...AESTHETE,
-    
+
     // User context
     USER_EMAIL: Session.getActiveUser().getEmail(),
     NOW: new Date()
   };
-  
+
   return _cfgCache;
 }
 
@@ -200,21 +202,21 @@ function getNumProp(key, fallback) {
 
 function selectAgent(capability) {
   const cfg = getConfig();
-  
+
   // Direct capability mapping
   const oracleCapabilities = AGENTS.ORACLE.capabilities;
   const scribeCapabilities = AGENTS.SCRIBE.capabilities;
-  
+
   if (oracleCapabilities.includes(capability)) {
     return AGENTS.ORACLE;
   }
-  
+
   if (scribeCapabilities.includes(capability)) {
     return AGENTS.SCRIBE;
   }
-  
+
   // Default to SSCRIBE for unknown (cheaper)
-  console.warn(`Unknown capability '${capability}', defaulting to SCRIBE`);
+  Logger.log(`[WARN] Unknown capability '${capability}', defaulting to SCRIBE`);
   return AGENTS.SCRIBE;
 }
 
@@ -223,19 +225,19 @@ function selectAgent(capability) {
 function validateConfig() {
   const cfg = getConfig();
   const errors = [];
-  
-  if (!cfg.GEMINI_API_KEY || cfg.GEMINI_API_KEY === 'PASTE_YOUR_GEMINI_API_KEY_HERE') {
-    errors.push('❌ GEMINI_API_KEY not set. Get from: https://aistudio.google.com/apikey');
+
+  if (!cfg.OPENAI_API_KEY || cfg.OPENAI_API_KEY === 'PASTE_YOUR_OPENAI_API_KEY_HERE') {
+    errors.push('❌ OPENAI_API_KEY not set.');
   }
-  
+
   if (!cfg.ROOT_FOLDER_ID) {
     errors.push('⚠️ ROOT_FOLDER_ID not set. Will use script folder.');
   }
-  
+
   if (errors.length > 0) {
     throw new Error('CONFIG VALIDATION FAILED:\n' + errors.join('\n'));
   }
-  
-  console.log('✅ Config validated. Agents ready.');
+
+  Logger.log('✅ Config validated. Agents ready.');
   return true;
 }

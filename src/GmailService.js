@@ -14,32 +14,32 @@
  */
 function fetchUnprocessedEmails_() {
   const cfg = getConfig();
-  
+
   const query = [
     `is:unread`,
     `-label:${cfg.PROCESSED_LABEL}`,
-    `subject:${cfg.BRIEFING_TAG}`,
-    `in:spam`,
-    `in:trash`
+    `-subject:${cfg.BRIEFING_TAG}`,  // FIXED: exclude Hermes-tagged emails (commands), not include them
+    `-in:spam`,
+    `-in:trash`
   ].join(' ');
-  
+
   let threads;
   try {
     threads = GmailApp.search(query, 0, cfg.MAX_EMAILS_PER_RUN);
   } catch (e) {
-    console.error(`Search failed: ${e.message}`);
+    Logger.log(`[ERROR] Search failed: ${e.message}`);
     return [];
   }
-  
+
   if (!threads || threads.length === 0) return [];
-  
+
   const emails = [];
-  
+
   for (const thread of threads) {
     try {
       const msgs = thread.getMessages();
       const m = msgs[msgs.length - 1]; // Latest message
-      
+
       emails.push({
         threadId: thread.getId(),
         messageId: m.getId(),
@@ -47,20 +47,20 @@ function fetchUnprocessedEmails_() {
         to: m.getTo() || '',
         cc: m.getCc() || '',
         subject: m.getSubject() || '(no subject)',
-        body: m.getPlainTextBody() || '',
+        body: m.getPlainBody() || '',
         htmlBody: m.getBody() || '',
         date: m.getDate(),
         threadSize: msgs.length,
         thread: thread,
         message: m,
-        snippet: truncate(m.getPlainTextBody(), 250)
+        snippet: truncate(m.getPlainBody(), 250)
       });
-      
+
     } catch (e) {
-      console.warn(`Skip broken thread ${thread?.getId()}: ${e.message}`);
+      Logger.log(`[WARN] Skip broken thread ${thread ? thread.getId() : 'unknown'}: ${e.message}`);
     }
   }
-  
+
   return emails;
 }
 
@@ -69,58 +69,58 @@ function fetchUnprocessedEmails_() {
  */
 function fetchUserCommands_() {
   const cfg = getConfig();
-  
+
   const query = [
     `subject:${cfg.BRIEFING_TAG}`,
     `-label:${cfg.PROCESSED_LABEL}`,
     `newer_than:1d`
   ].join(' ');
-  
+
   let threads;
   try {
     threads = GmailApp.search(query, 0, 10);
   } catch (e) {
-    console.error(`Command search failed: ${e.message}`);
+    Logger.log(`[ERROR] Command search failed: ${e.message}`);
     return [];
   }
-  
+
   if (!threads || threads.length === 0) return [];
-  
+
   const commands = [];
-  
+
   for (const thread of threads) {
     try {
       const msgs = thread.getMessages();
       const latest = msgs[msgs.length - 1];
       const html = latest.getBody() || '';
-      
+
       // Skip if Hermes generated this
       if (html.includes(cfg.AGENT_MARKER)) {
         markProcessed_(thread);
         continue;
       }
-      
+
       // Extract command text
-      const rawBody = latest.getPlainTextBody() || '';
+      const rawBody = latest.getPlainBody() || '';
       const commandText = extractReplyText(rawBody);
-      
+
       if ((commandText || '').trim().length === 0) {
         markProcessed_(thread);
         continue;
       }
-      
+
       commands.push({
         text: commandText.trim(),
         thread: thread,
         message: latest,
         subject: latest.getSubject() || ''
       });
-      
+
     } catch (e) {
-      console.warn(`Error reading command thread: ${e.message}`);
+      Logger.log(`[WARN] Error reading command thread: ${e.message}`);
     }
   }
-  
+
   return commands;
 }
 
@@ -132,57 +132,57 @@ function fetchUserCommands_() {
  */
 function searchEmails_(query, maxResults) {
   maxResults = Math.min(maxResults || 25, 75); // Cap at GAS limit
-  
+
   let threads;
   try {
     threads = GmailApp.search(query, 0, maxResults);
   } catch (e) {
-    console.warn(`Email search failed '${query}': ${e.message}`);
+    Logger.log(`[WARN] Email search failed '${query}': ${e.message}`);
     return [];
   }
-  
+
   if (!threads || threads.length === 0) return [];
-  
+
   const results = [];
   const seenThreadIds = new Set();
-  
+
   for (const thread of threads) {
     try {
       // Deduplicate by thread ID
       if (seenThreadIds.has(thread.getId())) continue;
       seenThreadIds.add(thread.getId());
-      
+
       const msgs = thread.getMessages();
       const latest = msgs[msgs.length - 1];
-      
+
       // Determine body length based on batch size
-      const bodyLen = threads.length > 30 ? 700 : 
-                      threads.length > 15 ? 1500 : 2000;
-      
+      const bodyLen = threads.length > 30 ? 700 :
+        threads.length > 15 ? 1500 : 2000;
+
       results.push({
         threadId: thread.getId(),
         from: latest.getFrom(),
         to: latest.getTo() || '',
         subject: latest.getSubject() || '(no subject)',
-        body: truncate(latest.getPlainTextBody(), bodyLen),
+        body: truncate(latest.getPlainBody(), bodyLen),
         date: latest.getDate(),
-        snippet: truncate(latest.getPlainTextBody(), 250),
+        snippet: truncate(latest.getPlainBody(), 250),
         thread: thread,
         messageCount: msgs.length,
-        
+
         // Include first message info if multiple
         firstMessageFrom: msgs.length > 1 ? msgs[0].getFrom() : null,
         firstMessageDate: msgs.length > 1 ? msgs[0].getDate() : null
       });
-      
+
     } catch (e) {
-      console.warn(`Skip broken thread in search: ${e.message}`);
+      Logger.log(`[WARN] Skip broken thread in search: ${e.message}`);
     }
   }
-  
+
   // Sort by date descending (newest first)
   results.sort((a, b) => new Date(b.date) - new Date(a.date));
-  
+
   return results;
 }
 
@@ -193,11 +193,11 @@ function searchEmailsMulti_(queries, maxPerQuery) {
   maxPerQuery = maxPerQuery || 20;
   const seenThreadIds = new Set();
   const allResults = [];
-  
+
   for (const q of queries) {
     try {
       const results = searchEmails_(q, maxPerQuery);
-      
+
       for (const r of results) {
         if (!seenThreadIds.has(r.threadId)) {
           seenThreadIds.add(r.threadId);
@@ -206,13 +206,13 @@ function searchEmailsMulti_(queries, maxPerQuery) {
         }
       }
     } catch (e) {
-      console.warn(`Multi-search query failed "${q}": ${e.message}`);
+      Logger.log(`[WARN] Multi-search query failed "${q}": ${e.message}`);
     }
   }
-  
+
   // Sort by date descending
   allResults.sort((a, b) => new Date(b.date) - new Date(a.date));
-  
+
   return allResults;
 }
 
@@ -226,11 +226,11 @@ function searchEmailsMulti_(queries, maxPerQuery) {
  */
 function sendHermesEmail_(subject, htmlBody, options = {}) {
   const cfg = getConfig();
-  
+
   // Sanitize HTML before sending
   const markedHtml = `${cfg.AGENT_MARKER}\n${stripHtml(htmlBody)}`;
   const fullSubject = `${cfg.BRIEFING_TAG} ${subject}`;
-  
+
   GmailApp.sendEmail(
     cfg.USER_EMAIL,
     fullSubject,
@@ -241,7 +241,7 @@ function sendHermesEmail_(subject, htmlBody, options = {}) {
       replyTo: options.replyTo || null
     }
   );
-  
+
   // Mark as sent in our system
   try {
     const found = GmailApp.search(`subject:"${fullSubject}" newer_than:1h`, 0, 1);
@@ -249,7 +249,7 @@ function sendHermesEmail_(subject, htmlBody, options = {}) {
   } catch (e) {
     // Non-critical
   }
-  
+
   Utilities.sleep(1500); // Rate limiting courtesy
 }
 
@@ -259,9 +259,9 @@ function sendHermesEmail_(subject, htmlBody, options = {}) {
 function replyInThread_(thread, htmlBody) {
   const cfg = getConfig();
   const markedHtml = `${cfg.AGENT_MARKER}\n${htmlBody}`;
-  
-  thread.reply('', markedHtml, {
-    htmlBody: sanitizeEmailHtml_(htmlBody),
+
+  thread.reply('', {
+    htmlBody: sanitizeEmailHtml_(markedHtml),
     name: 'Hermes'
   });
 }
@@ -279,18 +279,17 @@ function sendAsUser_(to, subject, body, options = {}) {
   if (!checkSendQuota_()) {
     throw new Error('Daily send limit reached (safety guardrail)');
   }
-  
+
   const recipientEmail = to.email || to;
-  
+
   GmailApp.sendEmail(recipientEmail, subject, body, {
-    htmlBody: sanitizeEmailHtml_(body),
+    htmlBody: sanitizeEmailHtml_(options.htmlBody || body),  // FIXED: removed duplicate htmlBody key
     cc: options.cc || '',
     bcc: options.bcc || '',
     name: options.name || '',
-    htmlBody: options.htmlBody || null,
     replyTo: options.replyTo || null
   });
-  
+
   incrementSendCount_();
 }
 
@@ -301,12 +300,12 @@ function replyAsUser_(thread, body, options = {}) {
   if (!checkSendQuota_()) {
     throw new Error('Daily send limit reached');
   }
-  
+
   thread.reply(body, '', {
     htmlBody: sanitizeEmailHtml_(body),
     ...options
   });
-  
+
   incrementSendCount_();
 }
 
@@ -319,10 +318,10 @@ function markProcessed_(thread) {
   const cfg = getConfig();
   try {
     const label = GmailApp.getUserLabelByName(cfg.PROCESSED_LABEL) ||
-                  GmailApp.createLabel(cfg.PROCESSED_LABEL);
+      GmailApp.createLabel(cfg.PROCESSED_LABEL);
     label.addToThread(thread);
   } catch (e) {
-    console.warn(`Failed to label thread: ${e.message}`);
+    Logger.log(`[WARN] Failed to label thread: ${e.message}`);
   }
 }
 
@@ -334,7 +333,7 @@ function archiveEmail_(threadId) {
     const thread = GmailApp.getThreadById(threadId);
     if (thread) thread.moveToArchive();
   } catch (e) {
-    console.warn(`Archive failed for ${threadId}: ${e.message}`);
+    Logger.log(`[WARN] Archive failed for ${threadId}: ${e.message}`);
   }
 }
 
@@ -345,13 +344,13 @@ function labelEmail_(threadId, labelName, threadObj) {
   try {
     const thread = threadObj || GmailApp.getThreadById(threadId);
     if (!thread) return;
-    
+
     let label = GmailApp.getUserLabelByName(labelName);
     if (!label) label = GmailApp.createLabel(labelName);
-    
+
     label.addToThread(thread);
   } catch (e) {
-    console.warn(`Labeling failed: ${e.message}`);
+    Logger.log(`[WARN] Labeling failed: ${e.message}`);
   }
 }
 
@@ -362,21 +361,21 @@ function labelEmail_(threadId, labelName, threadObj) {
  */
 function checkSendQuota_() {
   const today = todayStr_();
-  
+
   if (getProp('SENDS_DATE') !== today) {
     setProp('SENDS_DATE', today);
     setProp('SENDS_TODAY', '0');
   }
-  
+
   const sentToday = Number(getProp('SENDS_TODAY') || 0);
   const maxDaily = getNumProp('MAX_SEND_PER_DAY', 20);
-  
+
   return sentToday < maxDaily;
 }
 
 function incrementSendCount_() {
   const today = todayStr_();
-  
+
   if (getProp('SENDS_DATE') !== today) {
     setProp('SENDS_DATE', today);
     setProp('SENDS_TODAY', '1');

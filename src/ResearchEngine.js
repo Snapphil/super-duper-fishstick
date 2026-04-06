@@ -1,365 +1,329 @@
 /**
  * ============================================
  *  HERMES — ResearchEngine.gs
- *  Multi-step autonomous research
+ *  Multi-step research with null safety
  *  Max 7 tool calls per invocation
  * ============================================
  */
 
-/**
- * Conduct autonomous multi-step research.
- * Plans → Searches → Analyzes gaps → Fills gaps → Synthesizes
- */
 function conductResearch(userQuestion, conversationContext) {
   const startTime = Date.now();
   const budget = { gemini: 0, gmail: 0, MAX: 7 };
   const allEmails = [];
   const searchLog = [];
 
-  // ── STEP 1: PLAN ──
-  const plan = planResearch_(userQuestion, conversationContext);
-  budget.gemini++;
-
-  console.log(`🔬 Research plan: ${plan.searches.length} searches, framework: ${plan.framework}`);
-
-  // ── STEP 2: EXECUTE INITIAL SEARCHES ──
-  const initialSearches = (plan.searches || []).slice(0, 4);
-  for (const s of initialSearches) {
-    if (budget.gmail + budget.gemini >= budget.MAX - 1) break;
-    const emails = searchEmails(s.query, s.max_results || 25);
-    searchLog.push({ query: s.query, purpose: s.purpose, found: emails.length });
-    // Deduplicate by threadId
-    const seen = new Set(allEmails.map(e => e.threadId));
-    emails.forEach(e => { if (!seen.has(e.threadId)) { allEmails.push(e); seen.add(e.threadId); } });
-    budget.gmail++;
+  // STEP 0: Memory
+  let memory;
+  try { memory = getMemoryDigest(); } catch (e) {
+    Logger.log('[WARN] Memory load failed: ' + e.message);
+    memory = { full: 'Memory unavailable.', deadlines: [], upcomingDl: [], people: [], waitingOn: [], activeThreads: [], recentInsights: [], stats: { totalDeadlines: 0, totalPeople: 0, totalThreads: 0, overdueCount: 0 } };
   }
 
-  console.log(`🔬 Initial: ${allEmails.length} emails from ${searchLog.length} queries`);
+  // STEP 1: Plan
+  let plan;
+  try {
+    plan = planResearch_(userQuestion, conversationContext, memory);
+    budget.openai++;
+  } catch (e) {
+    Logger.log('[ERROR] Research planning failed: ' + e.message);
+    plan = { searches: [], framework: 'general', hypothesis: '', memory_covers: '', memory_gaps: '' };
+  }
 
-  // ── STEP 3: ANALYZE + FIND GAPS ──
-  let refinement = null;
-  if (budget.gmail + budget.gemini < budget.MAX - 1 && allEmails.length > 0) {
-    refinement = analyzeGaps_(userQuestion, allEmails, searchLog, plan, conversationContext);
-    budget.gemini++;
+  const searches = Array.isArray(plan.searches) ? plan.searches : [];
+  Logger.log(`[RESEARCH] Plan: ${searches.length} searches, framework: ${plan.framework || 'general'}`);
 
-    // ── STEP 4: FILL GAPS ──
-    const followUps = (refinement.follow_up_searches || []).slice(0, 3);
-    for (const fs of followUps) {
-      if (budget.gmail + budget.gemini >= budget.MAX - 1) break;
-      const more = searchEmails(fs.query, fs.max_results || 15);
-      searchLog.push({ query: fs.query, purpose: fs.purpose, found: more.length, phase: 'gap-fill' });
+  // STEP 2: Execute searches
+  for (const s of searches.slice(0, 4)) {
+    if (budget.gmail + budget.openai >= budget.MAX - 1) break;
+    if (!s || !s.query) continue;
+    try {
+      const emails = searchEmails(s.query, s.max_results || 25);
+      searchLog.push({ query: s.query, purpose: s.purpose || '', found: emails.length });
       const seen = new Set(allEmails.map(e => e.threadId));
-      more.forEach(e => { if (!seen.has(e.threadId)) { allEmails.push(e); seen.add(e.threadId); } });
+      emails.forEach(e => { if (!seen.has(e.threadId)) { allEmails.push(e); seen.add(e.threadId); } });
       budget.gmail++;
+    } catch (e) {
+      Logger.log('[WARN] Search failed: ' + e.message);
+      searchLog.push({ query: s.query, purpose: s.purpose || '', found: 0, error: e.message });
     }
-    console.log(`🔬 After gap-fill: ${allEmails.length} total emails`);
   }
 
-  // ── STEP 5: SYNTHESIZE ──
-  const answer = synthesizeResearch_(
-    userQuestion, allEmails, searchLog, plan, refinement, conversationContext
-  );
-  budget.gemini++;
+  Logger.log(`[RESEARCH] Initial: ${allEmails.length} emails from ${searchLog.length} queries`);
+
+  // STEP 3: Gap analysis
+  let refinement = null;
+  if (budget.gmail + budget.openai < budget.MAX - 1 && allEmails.length > 0) {
+    try {
+      refinement = analyzeGaps_(userQuestion, allEmails, searchLog, plan, conversationContext);
+      budget.openai++;
+
+      // STEP 4: Fill gaps
+      const followUps = Array.isArray(refinement.follow_up_searches) ? refinement.follow_up_searches : [];
+      for (const fs of followUps.slice(0, 2)) {
+        if (budget.gmail + budget.openai >= budget.MAX - 1) break;
+        if (!fs || !fs.query) continue;
+        try {
+          const more = searchEmails(fs.query, fs.max_results || 15);
+          searchLog.push({ query: fs.query, purpose: fs.purpose || '', found: more.length, phase: 'gap-fill' });
+          const seen = new Set(allEmails.map(e => e.threadId));
+          more.forEach(e => { if (!seen.has(e.threadId)) { allEmails.push(e); seen.add(e.threadId); } });
+          budget.gmail++;
+        } catch (e) { Logger.log('[WARN] Gap-fill search failed: ' + e.message); }
+      }
+    } catch (e) {
+      Logger.log('[WARN] Gap analysis failed: ' + e.message);
+    }
+  }
+
+  // STEP 5: Synthesize
+  let answer;
+  try {
+    answer = synthesizeResearch_(userQuestion, allEmails, searchLog, plan, refinement, conversationContext, memory);
+    budget.openai++;
+  } catch (e) {
+    Logger.log('[ERROR] Synthesis failed: ' + e.message);
+    answer = `<div style="color:${getTheme().accent};">Research synthesis failed: ${escapeHtml(e.message)}</div><br>` +
+      `I found ${allEmails.length} emails across ${searchLog.length} searches but couldn't compile results.<br>` +
+      `Try a more specific question.`;
+  }
 
   const stats = {
-    toolCalls: budget.gemini + budget.gmail,
-    geminiCalls: budget.gemini,
+    toolCalls: budget.openai + budget.gmail,
+    openaiCalls: budget.openai,
     gmailSearches: budget.gmail,
+    queriesRun: budget.gmail,
     emailsFound: allEmails.length,
     timeMs: Date.now() - startTime
   };
 
-  console.log(`🔬 Research done: ${stats.toolCalls} tool calls, ${allEmails.length} emails, ${stats.timeMs}ms`);
+  // STEP 6: Update memory
+  try {
+    if (allEmails.length > 0) updateMemoryFromResearch(userQuestion, answer, allEmails);
+  } catch (e) { Logger.log('[WARN] Memory update failed: ' + e.message); }
 
   return { answer, stats };
 }
 
-// ─── STEP 1: Research Planner ───
-
-function planResearch_(question, conversationCtx) {
+function planResearch_(question, conversationCtx, memory) {
   const agentMd = getAgentMd();
   const now = new Date();
+  const themeCtx = getThemePromptContext();
 
-  const sys = `You are a forensic research planner. Your job: design the perfect search strategy to answer a question by searching someone's Gmail inbox.
+  const sys = `You are a forensic research planner.
 
 ABOUT THE HUMAN:
 ${agentMd}
 
 TODAY: ${now.toISOString()} (${getDayName(now)})
 
-CONVERSATION SO FAR:
+CONVERSATION:
 ${conversationCtx}
 
-━━━ YOUR TASK ━━━
-Given the human's question, design a multi-pronged search strategy. Think like an investigator:
+EXISTING KNOWLEDGE:
+${memory ? memory.full : 'No memory loaded.'}
 
-1. SEMANTIC EXPANSION — The same information gets worded 50 different ways. A "job rejection" could be:
-   • "we regret to inform" / "unfortunately" / "not moving forward" / "other candidates" / "decided to pursue" / "will not be proceeding"
-   • "after careful consideration" / "we appreciate your interest" / "unable to offer" / "position has been filled"
-   • Subject lines: "Application Update" / "Your Application" / "RE: [Role]" / "Update on your candidacy"
-   • LinkedIn: "application was reviewed" / "hiring team has decided"
-   • ATS: from noreply@greenhouse.io, jobs-noreply@linkedin.com, no-reply@hire.lever.co
+TASK: Design search strategy. Check memory first.
 
-2. TEMPORAL STRATEGY — Break time ranges into chunks. Don't search "last 2 years" in one query — split by quarter or half-year.
-
-3. CROSS-REFERENCING — Look for adjacent evidence:
-   • If searching rejections → also search for application confirmations (to find ghosting)
-   • If searching events → also search for calendar invites, RSVP confirmations
-   • If searching about a person → also search for their name in different contexts
-
-4. COUNTER-EVIDENCE — What SHOULD exist but might not? (e.g., companies that never responded = ghosting)
-
-5. PLATFORM PATTERNS — Different platforms format emails differently:
-   • LinkedIn: from "messages-noreply@linkedin.com", specific subject patterns
-   • Greenhouse: from specific noreply addresses
-   • Direct from HR: varies wildly
+${themeCtx}
 
 Return JSON:
 {
+  "memory_relevant": true/false,
+  "memory_covers": "What memory already answers",
+  "memory_gaps": "What's missing",
   "searches": [
-    {
-      "query": "Gmail search query using proper operators (after:, before:, from:, subject:, OR, quotes)",
-      "purpose": "What this search aims to find",
-      "max_results": 20,
-      "priority": 1
-    }
+    {"query": "Gmail query using operators", "purpose": "what this finds", "max_results": 20, "priority": 1}
   ],
-  "framework": "The analytical framework to apply: funnel_analysis|timeline_reconstruction|pattern_detection|relationship_mapping|sentiment_tracking|behavioral_forensics",
-  "hypothesis": "Your initial hypothesis about what we'll find",
-  "blind_spots": "What might we miss and why"
+  "framework": "funnel_analysis|timeline_reconstruction|pattern_detection|relationship_mapping|behavioral_forensics",
+  "hypothesis": "initial hypothesis",
+  "blind_spots": "what we might miss"
 }
 
-━━━ GMAIL SEARCH OPERATORS ━━━
-after:YYYY/MM/DD  before:YYYY/MM/DD  from:email  to:email
-subject:(word1 OR word2)  "exact phrase"  (word1 OR word2)
-has:attachment  -word (exclude)  newer_than:Nd  older_than:Nd
-label:name  in:anywhere  category:primary
+GMAIL OPERATORS: after:YYYY/MM/DD before:YYYY/MM/DD from: to: subject:() "exact" (OR) -exclude has:attachment newer_than:Nd
 
-━━━ RULES ━━━
-• Generate 3-5 searches, ordered by priority
-• Each query should be DIVERSE — don't repeat the same keywords
-• Use OR operators liberally for semantic coverage
-• Split time ranges for questions spanning >6 months
-• Always include at least one "counter-evidence" or "adjacent" search
-• Be aggressive with max_results for broad questions (30-50)
-• Conservative for narrow questions (10-15)`;
+RULES:
+• 3-5 diverse searches, liberal OR usage
+• Split time ranges >6 months
+• Include semantic variants (rejections: "not moving forward" OR "other candidates" OR "regret" etc.)
+• searches MUST be a non-empty array`;
 
-  return callGeminiJson_(
-    `RESEARCH QUESTION: ${question}`,
-    sys,
-    { model: getConfig().GEMINI_MODEL, temperature: 0.2, maxTokens: 2048 }
-  );
-}
-
-// ─── STEP 3: Gap Analyzer ───
-
-function analyzeGaps_(question, emails, searchLog, plan, conversationCtx) {
-  const emailSummaries = emails.slice(0, 40).map((e, i) =>
-    `[${i+1}] FROM: ${e.from} | SUBJ: ${e.subject} | DATE: ${e.date} | SNIPPET: ${truncate(e.snippet || e.body, 120)}`
-  ).join('\n');
-
-  const searchSummary = searchLog.map(s =>
-    `• "${s.query}" → ${s.found} results (${s.purpose})`
-  ).join('\n');
-
-  const sys = `You are a research analyst reviewing initial search results for gaps and blind spots.
-
-ORIGINAL QUESTION: ${question}
-HYPOTHESIS: ${plan.hypothesis || 'none'}
-FRAMEWORK: ${plan.framework || 'general'}
-
-SEARCHES EXECUTED:
-${searchSummary}
-
-RESULTS FOUND (${emails.length} total):
-${emailSummaries}
-
-${emails.length > 40 ? `... and ${emails.length - 40} more` : ''}
-
-CONVERSATION CONTEXT:
-${conversationCtx}
-
-━━━ TASK ━━━
-Analyze what we found and what's MISSING. Think:
-• Time gaps — are there months with zero results that seem suspicious?
-• Category gaps — did we miss a type of email? (e.g., found LinkedIn rejections but not direct HR emails)
-• Counter-evidence — did we find any positive signals (interviews, offers) to compare against?
-• Anomalies — anything unexpected in the data?
-
-Return JSON:
-{
-  "initial_findings": "2-3 sentence summary of what the data shows so far",
-  "gaps_identified": ["gap 1", "gap 2"],
-  "anomalies": ["anything unexpected"],
-  "follow_up_searches": [
-    {
-      "query": "Gmail query to fill the gap",
-      "purpose": "What this will find",
-      "max_results": 15
-    }
-  ],
-  "confidence": 0.0-1.0,
-  "refined_hypothesis": "Updated hypothesis based on what we found"
-}`;
-
-  return callGeminiJson_('Analyze gaps.', sys, {
-    model: getConfig().GEMINI_MODEL,
-    temperature: 0.2,
-    maxTokens: 2048
+  return callOpenAIJson_(`RESEARCH: ${question}`, sys, {
+    model: getConfig().OPENAI_MODEL, temperature: 0.2, maxTokens: 2048
   });
 }
 
-// ─── STEP 5: Synthesizer ───
+function analyzeGaps_(question, emails, searchLog, plan, conversationCtx) {
+  const summaries = emails.slice(0, 40).map((e, i) =>
+    `[${i + 1}] ${e.from} | ${e.subject} | ${e.date} | ${truncate(e.snippet || '', 120)}`
+  ).join('\n');
 
-function synthesizeResearch_(question, emails, searchLog, plan, refinement, conversationCtx) {
-  // For large email sets, chunk and pre-summarize
+  const searchSummary = searchLog.map(s => `• "${s.query}" → ${s.found} (${s.purpose || ''})`).join('\n');
+
+  return callOpenAIJson_('Analyze gaps.', `Gap analysis. Q: ${question}. Hypothesis: ${plan.hypothesis || 'none'}.
+
+SEARCHES:
+${searchSummary}
+
+RESULTS (${emails.length}):
+${summaries}
+
+Return JSON: {"initial_findings":"...","gaps_identified":[],"anomalies":[],"follow_up_searches":[{"query":"...","purpose":"...","max_results":15}],"confidence":0.5,"refined_hypothesis":"..."}
+follow_up_searches MUST be an array (empty is OK).`, {
+    model: getConfig().OPENAI_MODEL, temperature: 0.2, maxTokens: 2048
+  });
+}
+
+function synthesizeResearch_(question, emails, searchLog, plan, refinement, conversationCtx, memory) {
   let emailContent;
   if (emails.length > 25) {
     emailContent = chunkAndSummarize_(emails, question);
   } else {
     emailContent = emails.map((e, i) =>
-      `━ EMAIL ${i+1} ━\nFROM: ${e.from}\nSUBJECT: ${e.subject}\nDATE: ${e.date}\n${truncate(e.body, 800)}`
+      `━ ${i + 1} ━\nFROM: ${e.from}\nSUBJ: ${e.subject}\nDATE: ${e.date}\n${truncate(e.body || '', 800)}`
     ).join('\n\n');
   }
 
-  const searchSummary = searchLog.map(s =>
-    `• ${s.purpose}: ${s.found} results${s.phase ? ' ('+s.phase+')' : ''}`
-  ).join('\n');
+  const t = getTheme();
+  const themeCtx = getThemePromptContext();
+  const searchSummary = searchLog.map(s => `• ${s.purpose || s.query}: ${s.found} results`).join('\n');
+  const memoryDl = (memory && memory.upcomingDl) ? memory.upcomingDl.map(d => `• ${d.description} — ${d.date}`).join('\n') : 'None';
 
-  const sys = `You are Hermes ⚡ — a brilliant analyst who thinks like a detective and communicates like a sharp chief of staff.
+  const sys = `You are Hermes ⚡ — brilliant analyst, sharp communicator.
 
-RESEARCH CONTEXT:
-• Question: ${question}
-• Framework: ${plan.framework || 'general'}
-• Hypothesis: ${refinement?.refined_hypothesis || plan.hypothesis || 'none'}
-• Gaps found: ${(refinement?.gaps_identified || []).join(', ') || 'none'}
-• Anomalies: ${(refinement?.anomalies || []).join(', ') || 'none'}
-• Total emails analyzed: ${emails.length}
+CONTEXT:
+Question: ${question}
+Framework: ${plan.framework || 'general'}
+Hypothesis: ${refinement?.refined_hypothesis || plan.hypothesis || 'none'}
+Gaps: ${(refinement?.gaps_identified || []).join(', ') || 'none'}
+Emails: ${emails.length}
+Memory deadlines: ${memoryDl}
+Searches: ${searchSummary}
+Conversation: ${conversationCtx}
 
-SEARCHES RUN:
-${searchSummary}
+${themeCtx}
 
-CONVERSATION HISTORY:
-${conversationCtx}
+━━━ OUTPUT ━━━
+Generate email-safe HTML using the EXACT theme colors above in inline styles.
+ALL layout must use <table> tags (no display:flex — breaks Gmail mobile).
+Use width="100%" on tables. All styles inline.
 
-━━━ OUTPUT FORMAT ━━━
-Respond in clean, email-safe HTML with inline styles. Dark theme (background will be #111, text #aaa/#ccc/#fff).
+Structure:
+1. HEADLINE — Bold opening insight (not "Based on my analysis")
+2. KEY METRICS — Use a table row with big numbers:
+<table cellpadding="0" cellspacing="0" border="0" width="100%"><tr>
+  <td width="25%" style="text-align:center;padding:8px;"><div style="font-size:26px;font-weight:800;color:${t.accent};">NUM</div><div style="font-size:9px;color:${t.textDim};text-transform:uppercase;">LABEL</div></td>
+</tr></table>
 
-Structure your response as:
+3. DETAILS — Organized with color-coded bullets (🔴🟡⚪), <strong style="color:${t.textBright};"> for emphasis
+4. NON-OBVIOUS INSIGHTS in accent boxes:
+<div style="border-left:3px solid ${t.accent2};padding:8px 12px;margin:10px 0;background:${t.bg};color:${t.text};font-size:13px;">insight</div>
 
-1. HEADLINE INSIGHT — One bold sentence. The answer, not the preamble.
+5. MEMORY UPDATE — Tell human what you saved: "Added X deadlines and Y contacts to memory."
+6. NEXT ACTION in <code style="color:${t.textMuted};background:${t.bg};padding:2px 6px;border-radius:3px;">command</code>
 
-2. KEY METRICS — Use a visual stat row:
-<div style="display:flex;gap:20px;margin:16px 0;">
-  <div><div style="font-size:28px;font-weight:800;color:#ef4444;">NUMBER</div><div style="font-size:10px;color:#555;text-transform:uppercase;">LABEL</div></div>
-</div>
+RULES:
+• Never start with "Based on" / "I found" — insight first
+• Quantify everything. Be opinionated.
+• Max 400 words. Dense.
+• ALL colors from theme. ALL layout with tables.`;
 
-3. PATTERN ANALYSIS — Use color-coded items:
-• 🔴 for critical/high-frequency patterns
-• 🟡 for notable patterns  
-• ⚪ for minor/informational
-Each pattern: emoji + bold label + percentage/count + one-line explanation
-
-4. NON-OBVIOUS INSIGHTS — Things the human didn't ask about but should know. Use:
-<div style="border-left:3px solid #8b5cf6;padding:8px 12px;margin:12px 0;background:#0a0a0a;border-radius:0 6px 6px 0;">insight text</div>
-
-5. ACTIONABLE RECOMMENDATIONS — Specific, numbered, opinionated. Not "consider" — "do this."
-
-━━━ STYLE RULES ━━━
-• NEVER start with "Based on my analysis" or "I found" — start with the insight
-• Every sentence must carry information. Zero filler.
-• Use <strong style="color:#fff;"> for key terms
-• Numbers are always bolded and sized up
-• Quantify everything — percentages, counts, timeframes
-• Be opinionated. Say "Your resume isn't getting past ATS" not "It appears your resume may face challenges"
-• If you spot something the human should worry about, flag it directly
-• If data is incomplete, say what's missing and what it likely means — don't hedge
-• Sound like a brilliant friend who happens to be a data analyst, not a report generator
-• Maximum 400 words. Density over length.
-• Sign off with a one-line suggested next action in <code> tags`;
-
-  const result = callGemini_(
+  const result = callOpenAI_(
     `EMAILS:\n${emailContent}\n\nSYNTHESIZE.`,
     sys,
-    { model: getConfig().GEMINI_PRO_MODEL || getConfig().GEMINI_MODEL, temperature: 0.4, maxTokens: 4096 }
+    { model: getConfig().OPENAI_PRO_MODEL || getConfig().OPENAI_MODEL, temperature: 0.4, maxTokens: 4096 }
   );
-
   return result.text.trim();
 }
-
-// ─── Helpers ───
 
 function chunkAndSummarize_(emails, question) {
   const CHUNK = 15;
   const summaries = [];
-
   for (let i = 0; i < emails.length; i += CHUNK) {
     const chunk = emails.slice(i, i + CHUNK);
     const content = chunk.map((e, j) =>
-      `[${i+j+1}] ${e.from} | ${e.subject} | ${e.date} | ${truncate(e.body, 400)}`
+      `[${i + j + 1}] ${e.from} | ${e.subject} | ${e.date} | ${truncate(e.body || '', 400)}`
     ).join('\n');
-
     try {
-      const result = callGemini_(
-        `Extract ALL items relevant to: "${question}"\n\nEMAILS:\n${content}\n\nReturn bullet points with dates, names, and key details. If nothing relevant, say "none."`,
-        'You are extracting relevant data points from emails. Be precise. Include dates, company names, role titles, and any stated reasons. Bullet points only.',
-        { model: getConfig().GEMINI_MODEL, temperature: 0.1, maxTokens: 1024 }
+      const result = callOpenAI_(
+        `Extract items relevant to: "${question}"\n\nEMAILS:\n${content}\n\nBullets with dates+names. "none" if nothing.`,
+        'Extract relevant data. Precise. Bullet points.', { model: getConfig().OPENAI_MODEL, temperature: 0.1, maxTokens: 1024 }
       );
-      if (!result.text.toLowerCase().includes('none')) {
-        summaries.push(result.text.trim());
-      }
-    } catch(e) {
-      console.warn(`Chunk summarize failed: ${e.message}`);
-    }
+      if (!result.text.toLowerCase().includes('none')) summaries.push(result.text.trim());
+    } catch (e) { Logger.log('[WARN] Chunk failed: ' + e.message); }
   }
-
   return summaries.join('\n\n---\n\n');
 }
 
-/**
- * Quick research for simpler follow-up questions.
- * Uses 2-3 tool calls instead of full 7.
- */
-function quickResearch(searchQueries, userQuestion, conversationCtx) {
-  // Execute searches
+function quickResearch(searchQueries, userQuestion, conversationCtx, memory) {
+  const queries = Array.isArray(searchQueries) ? searchQueries : [];
+  if (queries.length === 0) return null;
+
   const allEmails = [];
   const seen = new Set();
-
-  for (const sq of searchQueries.slice(0, 3)) {
-    const emails = searchEmails(sq.query, sq.max_results || 20);
-    emails.forEach(e => {
-      if (!seen.has(e.threadId)) { allEmails.push(e); seen.add(e.threadId); }
-    });
+  for (const sq of queries.slice(0, 3)) {
+    if (!sq || !sq.query) continue;
+    try {
+      const emails = searchEmails(sq.query, sq.max_results || 20);
+      emails.forEach(e => { if (!seen.has(e.threadId)) { allEmails.push(e); seen.add(e.threadId); } });
+    } catch (e) { Logger.log('[WARN] Quick search failed: ' + e.message); }
   }
 
   if (allEmails.length === 0) return null;
 
-  // Single-pass synthesis
+  const t = getTheme();
+  const themeCtx = getThemePromptContext();
   const emailContent = allEmails.slice(0, 20).map((e, i) =>
-    `━ ${i+1} ━ FROM: ${e.from} | SUBJ: ${e.subject} | DATE: ${e.date}\n${truncate(e.body, 600)}`
+    `━ ${i + 1} ━ ${e.from} | ${e.subject} | ${e.date}\n${truncate(e.body || '', 600)}`
   ).join('\n\n');
 
-  const sys = `You are Hermes ⚡. Answer the question using these emails.
+  const memCtx = memory ? `\nMEMORY:\n${memory.full}\n` : '';
 
-CONVERSATION:
-${conversationCtx}
-
-RULES:
-• Output email-safe HTML with inline styles (dark theme, bg #111)
-• Bold key details with <strong style="color:#fff;">
-• Be precise and concise — 200 words max
-• Use bullet points, not paragraphs
-• If the answer is a simple fact, give the fact. Don't pad it.
-• Don't start with "Based on" or "I found" — just answer`;
-
-  const result = callGemini_(
+  const result = callOpenAI_(
     `QUESTION: ${userQuestion}\n\nEMAILS (${allEmails.length}):\n${emailContent}`,
-    sys,
-    { model: getConfig().GEMINI_MODEL, temperature: 0.3, maxTokens: 2048 }
+    `You are Hermes ⚡. Answer using emails + memory. ${memCtx}
+${themeCtx}
+RULES: Email-safe HTML, inline styles, table layout (no flex), theme colors. 200 words max. Dense. Don't start with "Based on".`,
+    { model: getConfig().OPENAI_MODEL, temperature: 0.3, maxTokens: 2048 }
   );
 
+  try { updateMemoryFromResearch(userQuestion, result.text, allEmails); } catch (e) { }
+
+  return { answer: result.text.trim(), stats: { emailsFound: allEmails.length, queriesRun: queries.length } };
+}
+
+// ============ Research path aliases (Gmail / Gemini / memory naming) ============
+
+function searchEmails(query, maxResults) {
+  return searchEmails_(query, maxResults);
+}
+
+function getAgentMd() {
+  return getAgentMd_();
+}
+
+function getMemoryDigest() {
+  const d = getMemoryDigest_();
+  const structured = d.structured || {};
   return {
-    answer: result.text.trim(),
-    stats: { emailsFound: allEmails.length, queriesRun: searchQueries.length }
+    full: d.full,
+    stats: d.stats,
+    deadlines: structured.deadlines,
+    upcomingDl: structured.upcoming || [],
+    overdue: structured.overdue,
+    people: structured.people,
+    waitingOn: structured.waitingOn,
+    activeThreads: structured.activeThreads,
+    recentInsights: structured.recentInsights
   };
+}
+
+function callOpenAI_(prompt, systemPrompt, options) {
+  options = options || {};
+  const capability = options.capability || 'research_synthesis';
+  return callAgent_(capability, prompt, systemPrompt, options);
+}
+
+function callOpenAIJson_(prompt, systemPrompt, options) {
+  options = options || {};
+  return callOracleJson_(options.capability || 'research_synthesis', prompt, systemPrompt, options);
 }
