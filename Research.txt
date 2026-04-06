@@ -1,0 +1,207 @@
+# LLM Knowledge Bases: Toward Compiled, Self-Maintaining Personal Wikis
+
+> *A structured research note on Andrej Karpathy's LLM Wiki methodology — its architecture, theoretical underpinnings, comparison to retrieval-augmented generation, and implications for knowledge work.*
+
+---
+
+## Abstract
+
+On April 3, 2026, Andrej Karpathy published a GitHub Gist and accompanying post on X describing a personal knowledge management system he calls **LLM Knowledge Bases** (colloquially: the LLM Wiki). The core proposition is that large language models, rather than being used as stateless query-answering engines, can serve as persistent research librarians that incrementally *compile* raw source material into a structured, interlinked markdown wiki. This note synthesizes the methodology, contrasts it against the dominant retrieval-augmented generation (RAG) paradigm, outlines the three-layer architecture, and discusses failure modes, scalability constraints, and broader implications for personal and organizational knowledge infrastructure.
+
+---
+
+## 1. Motivation and Problem Statement
+
+Modern knowledge work involves a compounding problem: the volume of source material a researcher accumulates — papers, articles, repositories, datasets, meeting notes — grows continuously, while the tools available for synthesizing that material have remained largely stateless. A conventional LLM session reconstructs context from scratch on each invocation. Even RAG-augmented pipelines, while improving retrieval fidelity, are fundamentally transient: every query triggers re-synthesis from raw chunks, and no durable intermediate artifact accumulates between sessions.
+
+Karpathy frames this as a failure of *knowledge compilation*. In software engineering, we distinguish between source code (raw input) and compiled artifacts (optimized, structured output ready for execution). Personal knowledge management has historically lacked an analogous compilation step. Notes tools like Obsidian, Roam, and Notion surface raw input; they do not synthesize it. RAG systems synthesize on demand but produce no persistent artifact. The LLM Wiki proposes filling this gap: an LLM that continuously compiles raw sources into a living, structured, human-readable knowledge base.
+
+The shift Karpathy describes is a reallocation of *token throughput* — away from code generation and toward knowledge manipulation. The practical observation is that current frontier models are sufficiently capable to perform this compilation reliably, making the approach tractable for the first time.
+
+---
+
+## 2. Architecture
+
+The LLM Wiki system is organized into three layers, each with distinct roles and ownership semantics.
+
+### 2.1 Layer 1 — `raw/`
+
+The raw directory is the **source of truth** for all input material. It contains:
+
+- Research papers and articles (converted to `.md` via tools like Obsidian Web Clipper)
+- GitHub repository notes and READMEs
+- Datasets, images, and diagrams (stored locally so the LLM can reference them via vision capabilities)
+- Personal annotations and meeting notes
+
+A critical design invariant: **the LLM does not modify files in `raw/`**. This directory is append-only from the human's perspective and read-only from the LLM's perspective. It functions as a quarantine layer — hallucinations and synthesis errors in the wiki cannot corrupt original sources. Data quality in `raw/` is the binding constraint on the quality of the entire downstream system.
+
+### 2.2 Layer 2 — `wiki/`
+
+The wiki directory is the **compiled artifact** — a collection of `.md` files authored and maintained exclusively by the LLM. It contains:
+
+- **Summary pages**: one per raw source, distilling key claims and findings
+- **Concept pages**: encyclopedia-style articles on recurring themes and entities extracted across multiple sources
+- **Comparison pages**: structured side-by-side analyses of related approaches or findings
+- **Backlinks**: explicit cross-references between related wiki pages
+- **Index files**: auto-maintained tables of contents and brief abstracts enabling the LLM to navigate the wiki efficiently at query time
+
+The human's role in `wiki/` is reviewer, not author. Karpathy notes he rarely edits wiki files directly. The LLM writes, updates, and restructures this layer as new material arrives.
+
+### 2.3 Layer 3 — `schema.md`
+
+The schema is a single document that defines the **operating instructions** for the LLM acting as wiki maintainer. It specifies:
+
+- Folder structure conventions and naming rules
+- Citation format and backlink syntax
+- The ingest workflow (how to handle a newly dropped file in `raw/`)
+- Question-answering behavior and output format preferences
+- Linting rules: what constitutes an inconsistency, a missing backlink, or a stale summary
+
+The schema externalizes what would otherwise be implicit model behavior, making the system inspectable, portable across models, and iteratively refinable by the human owner.
+
+---
+
+## 3. Operational Workflow
+
+### 3.1 Ingestion
+
+New source material enters `raw/` via manual download or the Obsidian Web Clipper browser extension, which converts web pages to markdown and co-locates referenced images locally. The human then signals the LLM agent to perform an ingest pass: read the new file, update or create the corresponding summary page in `wiki/`, identify concepts that should be extended or newly created, and update the index.
+
+Karpathy describes two ingestion modes: **automated batch ingestion** (drop files, run agent) and **high-fidelity manual ingestion** (human reads the source alongside the agent, guiding updates interactively). The latter produces richer compilation at the cost of time.
+
+### 3.2 Compilation
+
+The compilation step is the system's core innovation. Unlike a RAG indexer that chunks and embeds without semantic understanding, the LLM reads source material and produces *interpretive* output: it identifies what is novel relative to existing wiki content, synthesizes across sources, resolves apparent contradictions, and builds explicit semantic links between concepts. The resulting wiki reflects accumulated understanding, not just accumulated data.
+
+### 3.3 Linting and Health Checks
+
+The system is not static after initial compilation. Karpathy describes periodic **linting passes** where the LLM scans the wiki for:
+
+- Broken or missing backlinks
+- Concept pages that should reference recently added material but do not
+- Summaries that have become stale relative to updated source understanding
+- Structural inconsistencies with the schema
+
+This self-healing property — the system identifies and corrects its own degradation — distinguishes the LLM Wiki from static note-taking systems.
+
+### 3.4 Query and Output
+
+Once the wiki reaches sufficient density (Karpathy's benchmark: ~100 articles, ~400,000 words), it supports complex question-answering. The LLM agent navigates the wiki it authored — reading index files and summary pages to orient itself, then fetching full concept pages as needed. Because the LLM built the wiki, it understands its own organizational logic, enabling more reliable navigation than a system doing cold retrieval against opaque embeddings.
+
+Outputs are rendered back into the wiki or into Obsidian-viewable formats: markdown files, Marp slide decks, or matplotlib visualizations.
+
+---
+
+## 4. Comparison with Retrieval-Augmented Generation
+
+RAG has been the dominant paradigm for grounding LLMs in proprietary or domain-specific data since approximately 2023. The two approaches differ across several dimensions.
+
+| Dimension | RAG | LLM Wiki |
+|---|---|---|
+| Knowledge representation | Vector embeddings in a database | Human-readable `.md` files |
+| Synthesis timing | At query time (stateless) | At ingest time (persistent) |
+| Knowledge accumulation | None between sessions | Compounding over time |
+| Auditability | Low (black-box similarity search) | High (traceable to source files) |
+| Infrastructure complexity | High (vector DB, embeddings pipeline) | Low (files + LLM agent) |
+| Scalability ceiling | Millions of documents | Hundreds to low thousands of documents |
+| Contradiction handling | None (returns conflicting chunks) | LLM resolves at compile time |
+| Vendor dependency | High (embedding model + vector DB) | Low (markdown is format-agnostic) |
+
+The LLM Wiki does not replace RAG for large-scale enterprise retrieval. Its comparative advantage is at the scale of an individual researcher or small team, where the depth and coherence of compiled knowledge outweighs the throughput advantages of vector search.
+
+---
+
+## 5. Theoretical Framing
+
+### 5.1 Knowledge Compilation as a Paradigm
+
+The analogy to software compilation is precise and generative. Raw sources are analogous to source code: correct and authoritative but not optimized for consumption. The wiki is the compiled binary: structured for fast access, with redundancy eliminated and relationships made explicit. The schema is the compiler specification. The LLM is the compiler.
+
+This framing suggests a natural extension: just as compiled binaries can be used to generate further artifacts (libraries, executables, documentation), a sufficiently mature wiki can serve as input for fine-tuning or synthetic data generation — the long-term direction Karpathy alludes to.
+
+### 5.2 Explicit vs. Implicit Memory
+
+Standard LLM usage relies on *implicit* memory: knowledge encoded in model weights during pre-training, surfaced probabilistically at inference. The LLM Wiki externalizes knowledge into *explicit* memory: files on disk, readable and editable by humans, versioned by standard tools. This aligns with a broader principle in systems design — explicit state is preferable to implicit state for systems that require inspection, debugging, and correction.
+
+### 5.3 The Librarian vs. Search Engine Distinction
+
+Karpathy's framing of the LLM as a *research librarian* rather than a *search engine* is conceptually important. A search engine retrieves on demand without accumulating understanding. A librarian reads the collection, maintains a catalog, identifies relationships between works, and can answer questions using synthesized knowledge rather than just retrieved fragments. The LLM Wiki operationalizes the librarian model at a cost (compilation time and tokens) that has only recently become tractable.
+
+---
+
+## 6. Toolchain and Implementation Notes
+
+Karpathy's current implementation is described as "a hacky collection of scripts," suggesting the methodology is more mature than the tooling. The known components are:
+
+- **Obsidian** — frontend for viewing and navigating the wiki; its local-first, file-based architecture aligns with the system's philosophy
+- **Obsidian Web Clipper** — browser extension for converting web content to markdown with local image storage
+- **Marp** — markdown-to-slides renderer for wiki-derived presentations
+- **Custom CLI scripts** — Python-based tooling for orchestrating LLM ingest and lint passes against the local file system
+- **Frontier LLM with vision** — required for processing image-containing sources; Karpathy does not specify a model but notes current frontier models are "quite good" at this task
+
+The choice of markdown as the storage format is philosophically significant. Markdown is plain text, readable by any editor, indexable by any search tool, versionable by git, and portable across every operating system. It imposes no vendor dependency and degrades gracefully — a wiki file opened in Notepad remains fully legible. This "file-over-app" philosophy is a direct counterpoint to SaaS-dependent knowledge tools.
+
+---
+
+## 7. Limitations and Failure Modes
+
+### 7.1 Scale Ceiling
+
+The approach does not scale to millions of documents. At ~400,000 words, the LLM can navigate via index files and summaries without requiring full context loading. As the wiki grows beyond this range, navigation efficiency degrades and the cost of linting passes increases. For large corpora, RAG or hybrid approaches remain necessary.
+
+### 7.2 Compilation Cost
+
+Each ingest pass and linting cycle consumes significant tokens. For high-frequency ingestion (daily additions to a fast-moving research area), token costs can become substantial. The system is better suited to deliberate, periodic compilation than continuous real-time ingestion.
+
+### 7.3 Schema Drift
+
+As the wiki grows and the human's understanding of the domain evolves, the schema may become inconsistent with actual wiki structure. Without discipline in schema maintenance, the LLM's operating instructions can diverge from the reality of the files it is managing, producing ingest errors or inconsistent organization.
+
+### 7.4 Hallucination Propagation
+
+If the LLM introduces a hallucination during compilation, it is written into a wiki file and may propagate into backlinks and concept pages referencing it. The `raw/` quarantine prevents contamination of source material, but the wiki itself requires periodic human review to catch synthesis errors. This is a known limitation of any LLM-generated artifact.
+
+### 7.5 Single-Researcher Optimization
+
+The current methodology is optimized for a single researcher with high domain familiarity. Multi-author wikis introduce coordination problems: whose schema takes precedence, how to merge concurrent LLM-authored edits, and how to handle conflicting interpretations of shared sources. These problems are tractable but unsolved in Karpathy's current formulation.
+
+---
+
+## 8. Broader Implications
+
+### 8.1 Enterprise Knowledge Infrastructure
+
+The most immediately striking implication is for organizational knowledge management. Most companies accumulate large volumes of unstructured internal data — Slack conversations, email threads, internal wikis, PDF reports, meeting transcripts — that are never synthesized into durable, queryable knowledge artifacts. An enterprise-scale LLM Wiki would not merely search this material; it would author a living company knowledge base, updated continuously as new information arrives. The barriers are primarily about trust, access control, and contradiction resolution at scale — not about the underlying methodology.
+
+### 8.2 Synthetic Data and Fine-Tuning
+
+A mature wiki represents a high-quality, domain-specific, structured dataset. Karpathy identifies this as a long-term goal: using the compiled wiki as training data for fine-tuning a model that internalizes the domain knowledge, reducing reliance on retrieval at inference time. This closes a loop: the LLM compiles the wiki, the wiki trains a better LLM, the better LLM compiles a better wiki.
+
+### 8.3 A New Product Category
+
+The methodology implies a product category that does not yet cleanly exist: an **agentic knowledge compiler** — a tool that accepts raw sources as input and produces a maintained, interlinked knowledge base as output, with the LLM handling all authoring and maintenance. Current tools either require humans to do the synthesis (Obsidian, Notion) or do stateless retrieval without synthesis (RAG systems). The LLM Wiki occupies the gap between these categories.
+
+---
+
+## 9. Summary
+
+Andrej Karpathy's LLM Knowledge Base methodology represents a meaningful shift in how LLMs can be used for personal knowledge management. By treating the LLM as a compiler rather than a search engine — one that produces persistent, human-readable, self-maintaining markdown artifacts from raw source material — the approach achieves knowledge accumulation and auditability that RAG systems do not provide, at the cost of scale and continuous compilation overhead.
+
+The three-layer architecture (`raw/` → `wiki/` → `schema.md`) is simple, portable, and philosophically coherent. The tooling is immature but the methodology is replicable. The primary constraints are scale (hundreds, not millions, of documents) and compilation cost (tokens per ingest pass). Within those constraints, the system outperforms RAG on synthesis quality, knowledge compounding, and transparency.
+
+The broader implication is a new paradigm for how humans and LLMs can share the work of knowledge organization: humans gather and curate sources, LLMs compile and maintain the synthesis. The division of labor is clean, the artifacts are durable, and the knowledge compounds over time rather than evaporating at the end of each session.
+
+---
+
+## References and Sources
+
+- Karpathy, A. (2026, April 3). *LLM Knowledge Bases* [Post]. X (formerly Twitter). https://x.com/karpathy/status/2039805659525644595
+- Karpathy, A. (2026, April 3). *llm-wiki* [GitHub Gist]. https://gist.github.com/karpathy/
+- VentureBeat. (2026, April 4). *Karpathy shares 'LLM Knowledge Base' architecture that bypasses RAG with an evolving markdown library maintained by AI.* https://venturebeat.com
+- Ahmed, M. (2026). *Karpathy's Obsidian RAG Killed My Vector Database.* https://www.mejba.me/blog/karpathy-obsidian-rag-knowledge-base
+- Dreamwalker. (2026). *What Is an LLM Wiki, and Why Are People Paying Attention to It?* Medium. https://medium.com/@aristojeff
+- Pebblous AI Blog. (2026). *LLMs That Compile Knowledge — From Karpathy's Markdown Wiki to the Democratization of Ontology.* https://blog.pebblous.ai
+
+---
+
+*This document was compiled on April 6, 2026. It is intended as a structured briefing note for use as context in further research and analysis.*

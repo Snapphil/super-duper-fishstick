@@ -1,0 +1,11 @@
+Read AGENTS.md before doing anything. It contains the full project architecture, constraints, and workflow for Hermes.
+
+Key rules:
+- Always `cat` a file before editing it. Never assume you know the current state.
+- This is a Google Apps Script project. No npm, no async/await, no modules. Vanilla JS only.
+- Use `UrlFetchApp.fetch()` not `fetch()`. Use `Logger.log()` not `console.log()`.
+- All source files go in `src/`. The `.clasp.json` rootDir points there.
+- After editing, run `./deploy.sh` to push to Apps Script.
+- Read `schema.md` to understand user preferences before modifying behavior logic.
+- Never modify files in `wiki/` manually — that's the LLM compilation layer.
+- Never modify `schema.md` — only the human edits that.
