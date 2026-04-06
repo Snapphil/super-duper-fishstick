@@ -240,9 +240,16 @@ function quickParseCommand_(text) {  // FIXED: was quickParseCommand (missing _)
     return { intent: 'resume' };
   }
 
-  // Show deadlines
-  if (/(show\s+)?deadlines/i.test(t)) {
-    return { intent: 'show_deadlines' };
+  // Show deadlines — but let ORACLE handle combined deadline+theme commands
+  if (/(show\s+)?deadlines?/i.test(t) || /deadlines?\s+(in|next|for|within)/i.test(t)) {
+    // If the command also mentions a theme/design change, send to ORACLE so both intents are captured
+    if (/(military|ocean|midnight|brutalist|neon|vapor|warm|theme|design|style|ui)/i.test(t)) {
+      return null;  // Fall through to ORACLE
+    }
+    var daysMatch = t.match(/(\d+)\s*days?/i);
+    var weekMatch = /next\s*week/i.test(t);
+    var days = daysMatch ? parseInt(daysMatch[1], 10) : weekMatch ? 7 : 14;
+    return { intent: 'show_deadlines', days: days };
   }
 
   return null;
